@@ -187,10 +187,14 @@ QJsonArray PostStore::listPosts()
         }
     }
 
-    // Sort by created_at descending
-    std::sort(posts.begin(), posts.end(), [](const QJsonValue& a, const QJsonValue& b) {
+    // Sort by created_at descending.
+    // Use QList to avoid std::sort incompatibility with QJsonArray iterators on Qt < 6.6.
+    QList<QJsonValue> sorted(posts.begin(), posts.end());
+    std::sort(sorted.begin(), sorted.end(), [](const QJsonValue& a, const QJsonValue& b) {
         return a.toObject()["created_at"].toString() > b.toObject()["created_at"].toString();
     });
+    posts = QJsonArray();
+    for (const auto& v : sorted) posts.append(v);
 
     return posts;
 }
@@ -218,10 +222,13 @@ QJsonArray PostStore::listDrafts()
         }
     }
 
-    // Sort by updated_at descending
-    std::sort(drafts.begin(), drafts.end(), [](const QJsonValue& a, const QJsonValue& b) {
+    // Sort by updated_at descending.
+    QList<QJsonValue> sorted(drafts.begin(), drafts.end());
+    std::sort(sorted.begin(), sorted.end(), [](const QJsonValue& a, const QJsonValue& b) {
         return a.toObject()["updated_at"].toString() > b.toObject()["updated_at"].toString();
     });
+    drafts = QJsonArray();
+    for (const auto& v : sorted) drafts.append(v);
 
     return drafts;
 }

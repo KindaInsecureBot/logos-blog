@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ── Options ──────────────────────────────────────────────────────────────────
 option(BUILD_MODULE    "Build headless blog_module plugin"  OFF)
 option(BUILD_UI_PLUGIN "Build IComponent blog_ui plugin"    OFF)
+option(BUILD_TESTS     "Build QTest unit tests (no SDK needed)" OFF)
 
 # Paths injected by Makefile or Nix (required for both targets)
 set(LOGOS_CPP_SDK_ROOT  "" CACHE PATH "Path to logos-cpp-sdk merged prefix")
@@ -125,5 +126,66 @@ if(BUILD_UI_PLUGIN)
     set_target_properties(blog_ui PROPERTIES
         PREFIX ""
         OUTPUT_NAME "blog_ui"
+    )
+endif()
+
+# ── Target: unit tests (BUILD_TESTS=ON, no Logos SDK required) ───────────────
+if(BUILD_TESTS)
+    find_package(OpenSSL REQUIRED)
+    find_package(Qt6 REQUIRED COMPONENTS Core Network Test)
+    set(CMAKE_AUTOMOC ON)
+    enable_testing()
+
+    # Common include dirs for all test targets:
+    #   tests/ first  → provides module_proxy.h stub (shadows the real SDK header)
+    #   src/          → provides all application headers
+    set(TEST_INCLUDE_DIRS
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
+
+    # ── helper macro ─────────────────────────────────────────────────────────
+    macro(add_blog_test target sources)
+        add_executable(${target} ${sources})
+        target_include_directories(${target} PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(${target} PRIVATE BUILD_TESTS)
+        target_link_libraries(${target} PRIVATE Qt6::Core Qt6::Test OpenSSL::Crypto)
+        add_test(NAME ${target} COMMAND ${target})
+    endmacro()
+
+    # ── test_crypto ───────────────────────────────────────────────────────────
+    add_blog_test(test_crypto
+        "tests/test_crypto.cpp;src/crypto.cpp"
+    )
+
+    # ── test_post_store ───────────────────────────────────────────────────────
+    add_blog_test(test_post_store
+        "tests/test_post_store.cpp;src/post_store.cpp"
+    )
+
+    # ── test_feed_store ───────────────────────────────────────────────────────
+    add_blog_test(test_feed_store
+        "tests/test_feed_store.cpp;src/feed_store.cpp;src/crypto.cpp"
+    )
+
+    # ── test_rss_server ───────────────────────────────────────────────────────
+    # Needs Qt6::Network for QTcpServer used by RssServer
+    add_executable(test_rss_server
+        tests/test_rss_server.cpp
+        src/rss_server.cpp
+        src/post_store.cpp
+        src/feed_store.cpp
+        src/crypto.cpp
+    )
+    target_include_directories(test_rss_server PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_rss_server PRIVATE BUILD_TESTS)
+    target_link_libraries(test_rss_server PRIVATE
+        Qt6::Core Qt6::Network Qt6::Test OpenSSL::Crypto)
+    add_test(NAME test_rss_server COMMAND test_rss_server)
+
+    # ── test_blog_plugin ──────────────────────────────────────────────────────
+    # Tests standalone envelope/search logic — only needs crypto.cpp
+    add_blog_test(test_blog_plugin
+        "tests/test_blog_plugin.cpp;src/crypto.cpp"
     )
 endif()

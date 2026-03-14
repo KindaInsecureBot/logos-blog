@@ -16,13 +16,15 @@ LOGOS_SDK_LIB_NIX     ?= $(shell ls -d /nix/store/*logos-cpp-sdk-lib-* 2>/dev/nu
 MODULES_DIR ?= $(HOME)/.local/share/Logos/LogosAppNix/modules
 PLUGINS_DIR ?= $(HOME)/.local/share/Logos/LogosAppNix/plugins
 
-BUILD_UI_DIR  ?= build-ui
-BUILD_MOD_DIR ?= build-module
+BUILD_UI_DIR   ?= build-ui
+BUILD_MOD_DIR  ?= build-module
+BUILD_TEST_DIR ?= build-tests
 
 # ── Phony targets ─────────────────────────────────────────────────────────────
 .PHONY: all build-module build-ui install-module install-ui \
         install install-all setup-nix-merged clean \
-        install-kv-module install-delivery-module
+        install-kv-module install-delivery-module \
+        build-tests test
 
 # ── Nix SDK merge ─────────────────────────────────────────────────────────────
 setup-nix-merged:
@@ -93,7 +95,19 @@ install-all: install install-kv-module install-delivery-module
 	@echo "All targets including dependencies installed"
 	@echo "Run: cd ~/logos-workspace && nix run '.#logos-app-poc'"
 
+# ── Unit tests (no Logos SDK, no display required) ────────────────────────────
+build-tests:
+	mkdir -p $(BUILD_TEST_DIR)
+	cd $(BUILD_TEST_DIR) && cmake .. -DBUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Debug \
+		$(if $(NIX_QTBASE), \
+		  -DCMAKE_PREFIX_PATH="$(NIX_QT_PREFIX)" \
+		  -DQT_ADDITIONAL_PACKAGES_PREFIX_PATH="$(NIX_QTDECL)$$(echo ';')$(NIX_QTREMOBJ)") \
+		&& cmake --build . -j$$(nproc)
+
+test: build-tests
+	cd $(BUILD_TEST_DIR) && ctest --output-on-failure
+
 # ── Clean ─────────────────────────────────────────────────────────────────────
 clean:
-	rm -rf $(BUILD_UI_DIR) $(BUILD_MOD_DIR) \
+	rm -rf $(BUILD_UI_DIR) $(BUILD_MOD_DIR) $(BUILD_TEST_DIR) \
 	       /tmp/logos-cpp-sdk-merged /tmp/logos-liblogos-merged

@@ -65,4 +65,8 @@ private:
     QString    etagFor(const QByteArray& body);
     void       sendResponse(QTcpSocket* socket, const Response& resp,
                             const QMap<QString,QString>& requestHeaders);
+
+#ifdef BUILD_TESTS
+    friend class TestRssServer;
+#endif
 };

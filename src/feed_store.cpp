@@ -250,9 +250,12 @@ QJsonArray FeedStore::getPostsByAuthor(const QString& pubkey)
         }
     }
 
-    std::sort(posts.begin(), posts.end(), [](const QJsonValue& a, const QJsonValue& b) {
+    QList<QJsonValue> sorted(posts.begin(), posts.end());
+    std::sort(sorted.begin(), sorted.end(), [](const QJsonValue& a, const QJsonValue& b) {
         return a.toObject()["created_at"].toString() > b.toObject()["created_at"].toString();
     });
+    posts = QJsonArray();
+    for (const auto& v : sorted) posts.append(v);
     return posts;
 }
 
@@ -274,9 +277,12 @@ QJsonArray FeedStore::getAggregatedFeed()
         }
     }
 
-    std::sort(posts.begin(), posts.end(), [](const QJsonValue& a, const QJsonValue& b) {
+    QList<QJsonValue> sorted(posts.begin(), posts.end());
+    std::sort(sorted.begin(), sorted.end(), [](const QJsonValue& a, const QJsonValue& b) {
         return a.toObject()["created_at"].toString() > b.toObject()["created_at"].toString();
     });
+    posts = QJsonArray();
+    for (const auto& v : sorted) posts.append(v);
     return posts;
 }
 
