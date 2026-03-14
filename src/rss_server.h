@@ -43,13 +43,16 @@ private:
     struct Response { int status; QString contentType; QByteArray body; };
 
     void handleRequest(QTcpSocket* socket, const QString& method,
-                       const QString& path, const QMap<QString,QString>& headers);
+                       const QString& path, const QMap<QString,QString>& headers,
+                       const QByteArray& body);
 
     Response serveHealth();
+    Response serveIndex();
     Response serveAggregatedFeed();
     Response serveAuthorFeed(const QString& pubkeyHex);
     Response serveMyFeed();
     Response serveOpmlExport();
+    Response importOpml(const QByteArray& body);
     Response serveNotFound();
 
     QByteArray buildAtomFeed(const QString& feedId, const QString& title,
