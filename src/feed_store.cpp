@@ -5,6 +5,7 @@
 #include <QJsonDocument>
 #include <QDateTime>
 #include <algorithm>
+#include <QHash>
 
 FeedStore::FeedStore(QObject* parent)
     : QObject(parent)
@@ -127,7 +128,30 @@ bool FeedStore::ingestPost(const QJsonObject& envelope)
     // Verify signature — silently drop invalid messages
     if (!verifyEnvelopeSignature(envelope)) return false;
 
+    // Rate limiting: max kMaxMsgsPerWindow messages per kRateWindowSecs seconds per author
+    const qint64 nowSecs = QDateTime::currentSecsSinceEpoch();
+    RateWindow& rw = m_rateLimiter[pubkey];
+    if (nowSecs - rw.windowStartSecs >= kRateWindowSecs) {
+        rw.windowStartSecs = nowSecs;
+        rw.count = 0;
+    }
+    if (rw.count >= kMaxMsgsPerWindow) return false;
+    ++rw.count;
+
+    // Drop oversized post bodies
+    if (post["body"].toString().toUtf8().size() > kMaxPostBodyBytes) return false;
+
     const QString key = QStringLiteral("feed:") + pubkey + ":" + postId;
+
+    // Cap: if this is a new post (key not present), check per-author limit
+    {
+        QVariant existCheck = m_kv->invokeRemoteMethod("kv_module", "get", QString(NS), key);
+        if (existCheck.toString().isEmpty()) {
+            // New post — check author post count
+            const int count = getPostsByAuthor(pubkey).size();
+            if (count >= kMaxPostsPerAuthor) return false;
+        }
+    }
 
     // Last-write-wins conflict resolution using updated_at
     QVariant existing = m_kv->invokeRemoteMethod("kv_module", "get", QString(NS), key);
@@ -254,6 +278,24 @@ QJsonArray FeedStore::getAggregatedFeed()
         return a.toObject()["created_at"].toString() > b.toObject()["created_at"].toString();
     });
     return posts;
+}
+
+QJsonArray FeedStore::getPostsByTag(const QString& tag)
+{
+    if (tag.isEmpty()) return getAggregatedFeed();
+
+    const QJsonArray all = getAggregatedFeed();
+    QJsonArray result;
+    for (const auto& p : all) {
+        const QJsonObject post = p.toObject();
+        for (const auto& t : post["tags"].toArray()) {
+            if (t.toString() == tag) {
+                result.append(post);
+                break;
+            }
+        }
+    }
+    return result;
 }
 
 QJsonObject FeedStore::getPost(const QString& authorPubkey, const QString& postId)

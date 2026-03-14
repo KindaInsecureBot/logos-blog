@@ -56,6 +56,16 @@ public:
     Q_INVOKABLE bool setRssPort(int port);
     Q_INVOKABLE bool setRssBindAddress(const QString& address);
 
+    // Search and filtering (Phase 6)
+    Q_INVOKABLE QString searchPosts(const QString& query);
+    Q_INVOKABLE QString getPostsByTag(const QString& tag);
+
+    // OPML (Phase 6)
+    Q_INVOKABLE QString getOpmlContent();
+    Q_INVOKABLE bool    importOpml(const QString& xml);
+    Q_INVOKABLE bool    exportOpmlToFile(const QString& fileUrl);
+    Q_INVOKABLE bool    importOpmlFromFile(const QString& fileUrl);
+
 signals:
     void identityChanged();
     void rssStateChanged();

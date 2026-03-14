@@ -3,6 +3,8 @@
 
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QFile>
+#include <QUrl>
 
 BlogBackend::BlogBackend(QObject* parent)
     : QObject(parent)
@@ -188,4 +190,53 @@ bool BlogBackend::setRssBindAddress(const QString& address)
         address).toBool();
     if (ok) refreshRssState();
     return ok;
+}
+
+// ── Search and filtering ───────────────────────────────────────────────────────
+
+QString BlogBackend::searchPosts(const QString& query)
+{
+    if (!m_blogModule) return "[]";
+    return m_blogModule->invokeRemoteMethod("blog_module", "searchPosts", query).toString();
+}
+
+QString BlogBackend::getPostsByTag(const QString& tag)
+{
+    if (!m_blogModule) return "[]";
+    return m_blogModule->invokeRemoteMethod("blog_module", "getPostsByTag", tag).toString();
+}
+
+// ── OPML ──────────────────────────────────────────────────────────────────────
+
+QString BlogBackend::getOpmlContent()
+{
+    if (!m_blogModule) return {};
+    return m_blogModule->invokeRemoteMethod("blog_module", "getOpmlContent").toString();
+}
+
+bool BlogBackend::importOpml(const QString& xml)
+{
+    if (!m_blogModule) return false;
+    return m_blogModule->invokeRemoteMethod("blog_module", "importOpml", xml).toBool();
+}
+
+bool BlogBackend::exportOpmlToFile(const QString& fileUrl)
+{
+    const QString content = getOpmlContent();
+    if (content.isEmpty()) return false;
+
+    const QString path = QUrl(fileUrl).toLocalFile();
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
+    file.write(content.toUtf8());
+    return true;
+}
+
+bool BlogBackend::importOpmlFromFile(const QString& fileUrl)
+{
+    const QString path = QUrl(fileUrl).toLocalFile();
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+    const QString xml = QString::fromUtf8(file.readAll());
+    return importOpml(xml);
 }

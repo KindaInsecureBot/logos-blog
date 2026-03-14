@@ -9,6 +9,7 @@
         <file>DraftsView.qml</file>
         <file>SettingsView.qml</file>
         <file>SubscribeDialog.qml</file>
+        <file>ProfileView.qml</file>
         <file>components/PostCard.qml</file>
         <file>components/AuthorChip.qml</file>
         <file>components/TagChip.qml</file>

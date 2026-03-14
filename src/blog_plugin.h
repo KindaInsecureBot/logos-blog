@@ -48,6 +48,14 @@ public:
     Q_INVOKABLE QString getRssBindAddress();
     Q_INVOKABLE bool    setRssBindAddress(const QString& address);
 
+    // Search and filtering (Phase 6)
+    Q_INVOKABLE QString searchPosts(const QString& query);
+    Q_INVOKABLE QString getPostsByTag(const QString& tag);
+
+    // OPML content and import (Phase 6)
+    Q_INVOKABLE QString getOpmlContent();
+    Q_INVOKABLE bool    importOpml(const QString& xml);
+
 signals:
     void postPublished(const QString& postJson);
     void postReceived(const QString& postJson);

@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QMap>
 
 class ModuleProxy;
 
@@ -30,6 +31,7 @@ public:
     // Feed queries
     QJsonArray  getPostsByAuthor(const QString& pubkey);
     QJsonArray  getAggregatedFeed();
+    QJsonArray  getPostsByTag(const QString& tag);
     QJsonObject getPost(const QString& authorPubkey, const QString& postId);
 
     // Returns list of all subscribed pubkeys (used by WakuSync::start)
@@ -43,5 +45,13 @@ signals:
 private:
     ModuleProxy* m_kv = nullptr;
 
-    static constexpr const char* NS = "blog";
+    // Rate limiting: per-author sliding window
+    struct RateWindow { int count = 0; qint64 windowStartSecs = 0; };
+    QMap<QString, RateWindow> m_rateLimiter;
+
+    static constexpr const char* NS          = "blog";
+    static constexpr int kMaxMsgsPerWindow   = 100;
+    static constexpr int kRateWindowSecs     = 60;
+    static constexpr int kMaxPostBodyBytes   = 512 * 1024;  // 512 KB
+    static constexpr int kMaxPostsPerAuthor  = 1000;
 };

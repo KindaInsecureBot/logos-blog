@@ -108,6 +108,10 @@ Item {
                     "authorPubkey": authorPubkey
                 })
             }
+
+            function openAuthorProfile(pubkey) {
+                stackView.push(profileViewComponent, { "authorPubkey": pubkey })
+            }
         }
     }
 
@@ -139,10 +143,22 @@ Item {
     }
 
     // ── View components ───────────────────────────────────────────────────
-    Component { id: feedViewComponent;     FeedView    { onOpenPost: (id, pk) => stackView.openPost(id, pk) } }
+    Component {
+        id: feedViewComponent
+        FeedView {
+            onOpenPost:         (id, pk)  => stackView.openPost(id, pk)
+            onOpenAuthorProfile: (pk)     => stackView.openAuthorProfile(pk)
+        }
+    }
     Component { id: myPostsViewComponent;  MyPostsView { onOpenPost: (id) => stackView.openPost(id, "") onNewPost: stackView.navigateTo("editor") } }
     Component { id: draftsViewComponent;   DraftsView  { onEditDraft: (id) => { stackView.push(editorViewComponent, {"draftId": id}) } } }
     Component { id: editorViewComponent;   EditorView  { onPostPublished: (id) => { stackView.navigateTo("myposts") } } }
     Component { id: settingsViewComponent; SettingsView {} }
     Component { id: postViewComponent;     PostView    {} }
+    Component {
+        id: profileViewComponent
+        ProfileView {
+            onOpenPost: (id, pk) => stackView.openPost(id, pk)
+        }
+    }
 }

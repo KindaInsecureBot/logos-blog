@@ -4,7 +4,11 @@
 #include <QStandardPaths>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QDateTime>
+#include <QXmlStreamReader>
+#include <QRegularExpression>
+#include <QTextStream>
 
 BlogPlugin::BlogPlugin(QObject* parent)
     : QObject(parent)
@@ -420,4 +424,104 @@ bool BlogPlugin::setRssBindAddress(const QString& address)
         QString("blog"), QString("settings:rss_bind"), address);
     m_rss->stop();
     return m_rss->start(address, m_rss->port());
+}
+
+// ── Search and filtering ───────────────────────────────────────────────────────
+
+static bool postMatchesQuery(const QJsonObject& post, const QString& lowerQuery)
+{
+    if (post["title"].toString().toLower().contains(lowerQuery)) return true;
+    if (post["body"].toString().toLower().contains(lowerQuery)) return true;
+    if (post["summary"].toString().toLower().contains(lowerQuery)) return true;
+    for (const auto& tag : post["tags"].toArray()) {
+        if (tag.toString().toLower().contains(lowerQuery)) return true;
+    }
+    return false;
+}
+
+QString BlogPlugin::searchPosts(const QString& query)
+{
+    if (query.isEmpty()) return "[]";
+    const QString q = query.toLower();
+
+    QJsonArray results;
+    // Search own posts
+    for (const auto& p : m_posts->listPosts()) {
+        const QJsonObject post = p.toObject();
+        if (postMatchesQuery(post, q)) results.append(post);
+    }
+    // Search feed posts (dedup by id+pubkey using a set)
+    for (const auto& p : m_feed->getAggregatedFeed()) {
+        const QJsonObject post = p.toObject();
+        if (postMatchesQuery(post, q)) results.append(post);
+    }
+    return QString::fromUtf8(QJsonDocument(results).toJson(QJsonDocument::Compact));
+}
+
+QString BlogPlugin::getPostsByTag(const QString& tag)
+{
+    return QString::fromUtf8(
+        QJsonDocument(m_feed->getPostsByTag(tag)).toJson(QJsonDocument::Compact));
+}
+
+// ── OPML ──────────────────────────────────────────────────────────────────────
+
+QString BlogPlugin::getOpmlContent()
+{
+    const QJsonArray subs = m_feed->listSubscriptions();
+    const int port = m_rss ? m_rss->port() : 8484;
+    const QString bind = m_rss ? m_rss->bindAddress() : "127.0.0.1";
+    const QString base = QStringLiteral("http://") + bind + ":" + QString::number(port);
+
+    QString xml;
+    QTextStream ts(&xml);
+    ts << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+       << "<opml version=\"2.0\">\n"
+       << "  <head>\n"
+       << "    <title>Logos Blog Subscriptions</title>\n"
+       << "    <dateCreated>"
+       << QDateTime::currentDateTimeUtc().toString(Qt::RFC2822Date)
+       << "</dateCreated>\n"
+       << "  </head>\n"
+       << "  <body>\n";
+    for (const auto& s : subs) {
+        const QJsonObject sub = s.toObject();
+        const QString pubkey = sub["pubkey"].toString();
+        const QString name   = sub["name"].toString().toHtmlEscaped();
+        ts << "    <outline type=\"rss\" text=\"" << name
+           << "\" xmlUrl=\"" << base << "/@" << pubkey << "/feed.xml"
+           << "\" htmlUrl=\"" << base << "/@" << pubkey
+           << "\" pubkey=\"" << pubkey << "\"/>\n";
+    }
+    ts << "  </body>\n</opml>\n";
+    ts.flush();
+    return xml;
+}
+
+bool BlogPlugin::importOpml(const QString& xml)
+{
+    static const QRegularExpression pubkeyFromUrl(R"(/@([0-9a-f]{64})/feed\.xml)");
+
+    QXmlStreamReader reader(xml.toUtf8());
+    int imported = 0;
+    while (!reader.atEnd() && !reader.hasError()) {
+        reader.readNext();
+        if (reader.tokenType() != QXmlStreamReader::StartElement) continue;
+        if (reader.name() != QStringView(u"outline")) continue;
+
+        const QXmlStreamAttributes attrs = reader.attributes();
+        const QString xmlUrl = attrs.value("xmlUrl").toString();
+        const QString name   = attrs.value("text").toString();
+
+        QString pubkey = attrs.value("pubkey").toString();
+        if (pubkey.isEmpty() && !xmlUrl.isEmpty()) {
+            const QRegularExpressionMatch m = pubkeyFromUrl.match(xmlUrl);
+            if (m.hasMatch()) pubkey = m.captured(1);
+        }
+        if (pubkey.isEmpty()) continue;
+
+        subscribe(pubkey, name.isEmpty() ? pubkey.left(8) : name);
+        ++imported;
+    }
+    return imported > 0;
 }
