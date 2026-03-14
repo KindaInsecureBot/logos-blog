@@ -1,0 +1,19 @@
+<RCC>
+    <qresource prefix="/blog_ui">
+        <file>Main.qml</file>
+        <file>FeedView.qml</file>
+        <file>BlogView.qml</file>
+        <file>PostView.qml</file>
+        <file>EditorView.qml</file>
+        <file>MyPostsView.qml</file>
+        <file>DraftsView.qml</file>
+        <file>SettingsView.qml</file>
+        <file>SubscribeDialog.qml</file>
+        <file>components/PostCard.qml</file>
+        <file>components/AuthorChip.qml</file>
+        <file>components/TagChip.qml</file>
+        <file>components/MarkdownText.qml</file>
+        <file>components/SidebarButton.qml</file>
+        <file>components/ErrorBanner.qml</file>
+    </qresource>
+</RCC>
