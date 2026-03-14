@@ -38,12 +38,104 @@ Item {
                     font.bold: true
                 }
 
+                // ── Own pubkey section ────────────────────────────────────
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Text { text: "Your Identity Key"; color: "#4dabf7"; font.pixelSize: 13; font.bold: true }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: pubkeyContent.implicitHeight + 24
+                        color: "#25262b"
+                        radius: 8
+                        border.color: "#373a40"
+
+                        ColumnLayout {
+                            id: pubkeyContent
+                            anchors { fill: parent; margins: 16 }
+                            spacing: 8
+
+                            Text {
+                                text: "Public Key (share this so others can subscribe to you)"
+                                color: "#909296"
+                                font.pixelSize: 12
+                                wrapMode: Text.Wrap
+                                Layout.fillWidth: true
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    height: 32
+                                    radius: 4
+                                    color: "#1e1f22"
+                                    border.color: "#373a40"
+
+                                    Text {
+                                        anchors { fill: parent; leftMargin: 10; rightMargin: 10 }
+                                        verticalAlignment: Text.AlignVCenter
+                                        text: (typeof backend !== "undefined" && backend.ownPubkey)
+                                            ? backend.ownPubkey
+                                            : "Generating…"
+                                        color: backend && backend.ownPubkey ? "#c1c2c5" : "#5c5f66"
+                                        font.family: "monospace"
+                                        font.pixelSize: 11
+                                        elide: Text.ElideMiddle
+                                    }
+                                }
+
+                                Button {
+                                    text: "Copy"
+                                    enabled: typeof backend !== "undefined" && backend.ownPubkey !== ""
+                                    onClicked: {
+                                        // Qt.clipboard not available in all environments;
+                                        // use a TextEdit trick
+                                        copyHelper.text = backend.ownPubkey
+                                        copyHelper.selectAll()
+                                        copyHelper.copy()
+                                    }
+                                    background: Rectangle {
+                                        radius: 4
+                                        color: parent.hovered ? "#2a2d32" : "#25262b"
+                                        border.color: "#373a40"
+                                    }
+                                    contentItem: Text {
+                                        text: parent.text
+                                        color: "#c1c2c5"
+                                        font.pixelSize: 12
+                                        horizontalAlignment: Text.AlignHCenter
+                                    }
+                                }
+                            }
+
+                            // Hidden TextEdit used only for clipboard copy
+                            TextEdit {
+                                id: copyHelper
+                                visible: false
+                                text: ""
+                            }
+
+                            Connections {
+                                target: typeof backend !== "undefined" ? backend : null
+                                function onIdentityChanged() {
+                                    // Nothing to do — ownPubkey property binding updates automatically
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // ── Identity section ──────────────────────────────────────
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 8
 
-                    Text { text: "Identity"; color: "#4dabf7"; font.pixelSize: 13; font.bold: true }
+                    Text { text: "Profile"; color: "#4dabf7"; font.pixelSize: 13; font.bold: true }
 
                     Rectangle {
                         Layout.fillWidth: true

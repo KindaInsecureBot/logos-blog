@@ -38,6 +38,16 @@ void BlogBackend::connectSignals()
     m_api->on("blog_module", "identityChanged", [this](QVariantList) {
         refreshIdentity();
     });
+    m_api->on("blog_module", "wakuStarted", [this](QVariantList) {
+        m_wakuConnected = true;
+        emit wakuStateChanged();
+    });
+
+    // Waku is considered connected if delivery_module is present
+    if (m_api->getClient("delivery_module")) {
+        m_wakuConnected = true;
+        emit wakuStateChanged();
+    }
 }
 
 void BlogBackend::refreshIdentity()
