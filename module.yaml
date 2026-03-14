@@ -1,0 +1,14 @@
+name: blog_module
+version: 0.1.0
+type: core
+description: Decentralized blogging backend for Logos
+dependencies:
+  - kv_module
+build:
+  cmake:
+    flags:
+      - -DBUILD_MODULE=ON
+    target: blog_module_plugin
+output:
+  lib: blog_module_plugin.so
+  manifest: metadata.json

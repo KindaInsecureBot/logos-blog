@@ -1,0 +1,11 @@
+{
+  "name": "blog_module",
+  "version": "0.1.0",
+  "type": "core",
+  "category": "productivity",
+  "author": "logos-co",
+  "description": "Decentralized blogging backend (headless)",
+  "dependencies": ["kv_module"],
+  "main": "blog_module_plugin",
+  "manifestVersion": "0.1.0"
+}
