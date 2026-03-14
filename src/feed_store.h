@@ -1,4 +1,5 @@
 #pragma once
+#include "crypto.h"
 #include <QObject>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -20,10 +21,11 @@ public:
     bool       isSubscribed(const QString& pubkey) const;
     void       updateLastSeen(const QString& pubkey);
 
-    // Ingestion — called by WakuSync on messageReceived
+    // Ingestion — called by WakuSync on messageReceived.
+    // Each method takes the full signed envelope for signature verification.
     bool ingestPost(const QJsonObject& envelope);
-    bool ingestDelete(const QString& authorPubkey, const QString& postId);
-    bool ingestProfile(const QString& pubkey, const QJsonObject& profile);
+    bool ingestDelete(const QJsonObject& envelope);
+    bool ingestProfile(const QJsonObject& envelope);
 
     // Feed queries
     QJsonArray  getPostsByAuthor(const QString& pubkey);

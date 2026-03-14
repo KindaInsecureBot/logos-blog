@@ -34,6 +34,10 @@ public:
     // Replay history for a topic (best-effort)
     void requestHistory(const QString& pubkeyHex, const QDateTime& since);
 
+    // Called by BlogPlugin when delivery_module fires messageReceived.
+    // Decodes base64 payload and emits messageReceived signal.
+    void onDeliveryMessage(const QString& topic, const QString& base64payload);
+
 signals:
     void messageReceived(const QString& topic, const QString& payloadJson);
     void nodeStarted();

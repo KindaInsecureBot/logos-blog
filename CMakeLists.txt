@@ -14,6 +14,7 @@ set(LOGOS_LIBLOGOS_ROOT "" CACHE PATH "Path to logos-liblogos merged prefix")
 
 # ── Shared setup ─────────────────────────────────────────────────────────────
 if(BUILD_MODULE OR BUILD_UI_PLUGIN)
+    find_package(OpenSSL REQUIRED)
     set(CMAKE_AUTOMOC ON)
 
     set(LOGOS_INCLUDE_DIRS
@@ -50,6 +51,7 @@ if(BUILD_MODULE)
         src/feed_store.cpp
         src/waku_sync.cpp
         src/rss_server.cpp
+        src/crypto.cpp
     )
 
     target_include_directories(blog_module_plugin PRIVATE
@@ -63,6 +65,7 @@ if(BUILD_MODULE)
         Qt6::Qml
         Qt6::RemoteObjects
         Qt6::Network
+        OpenSSL::Crypto
         ${LOGOS_SDK_LIB}
         Qt6::RemoteObjects   # listed twice: SDK pulls RemoteObjects symbols
         ${LOGOS_CORE_LIB}
@@ -89,6 +92,7 @@ if(BUILD_UI_PLUGIN)
     add_library(blog_ui SHARED
         src/blog_ui_component.cpp
         src/blog_backend.cpp
+        src/crypto.cpp
         qml/blog_ui.qrc
     )
 
@@ -112,6 +116,7 @@ if(BUILD_UI_PLUGIN)
         Qt6::Widgets
         Qt6::RemoteObjects
         Qt6::Network
+        OpenSSL::Crypto
         ${LOGOS_SDK_LIB}
         Qt6::RemoteObjects
         ${LOGOS_CORE_LIB}

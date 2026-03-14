@@ -1,5 +1,6 @@
 #include "feed_store.h"
 #include "module_proxy.h"
+#include "crypto.h"
 
 #include <QJsonDocument>
 #include <QDateTime>
@@ -95,46 +96,98 @@ void FeedStore::updateLastSeen(const QString& pubkey)
         QString::fromUtf8(QJsonDocument(sub).toJson(QJsonDocument::Compact)));
 }
 
+// Verify the Ed25519 signature on an envelope.
+// The signature covers compact JSON of the envelope with "signature" key removed.
+static bool verifyEnvelopeSignature(const QJsonObject& envelope)
+{
+    const QString sigHex = envelope["signature"].toString();
+    if (sigHex.isEmpty()) return false;
+
+    const QString pubkey = envelope["author"].toObject()["pubkey"].toString();
+    if (pubkey.isEmpty()) return false;
+
+    QJsonObject toVerify = envelope;
+    toVerify.remove("signature");
+    const QByteArray canonical = QJsonDocument(toVerify).toJson(QJsonDocument::Compact);
+    return Crypto::verify(pubkey, sigHex, canonical);
+}
+
 bool FeedStore::ingestPost(const QJsonObject& envelope)
 {
     if (!m_kv) return false;
 
+    const QJsonObject authorObj = envelope["author"].toObject();
+    const QString pubkey = authorObj["pubkey"].toString();
     const QJsonObject post = envelope["post"].toObject();
-    const QJsonObject author = envelope["author"].toObject();
-    const QString pubkey = author["pubkey"].toString();
     const QString postId = post["id"].toString();
 
     if (pubkey.isEmpty() || postId.isEmpty()) return false;
     if (!isSubscribed(pubkey)) return false;
 
-    QJsonObject stored = post;
-    stored["author_pubkey"] = pubkey;
-    stored["author_name"]   = author["name"].toString();
-    stored["signature"]     = envelope["signature"].toString();
-    stored["verified"]      = false; // real verification in Phase 3
-    stored["received_at"]   = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    // Verify signature — silently drop invalid messages
+    if (!verifyEnvelopeSignature(envelope)) return false;
 
     const QString key = QStringLiteral("feed:") + pubkey + ":" + postId;
+
+    // Last-write-wins conflict resolution using updated_at
+    QVariant existing = m_kv->invokeRemoteMethod("kv_module", "get", QString(NS), key);
+    if (!existing.toString().isEmpty()) {
+        const QJsonObject stored = QJsonDocument::fromJson(existing.toString().toUtf8()).object();
+        const QDateTime incomingTs = QDateTime::fromString(
+            post["updated_at"].toString(), Qt::ISODate);
+        const QDateTime storedTs = QDateTime::fromString(
+            stored["updated_at"].toString(), Qt::ISODate);
+
+        if (incomingTs < storedTs) return false;  // older version — discard
+        if (incomingTs == storedTs) {
+            // Tie-break: lexicographically larger signature wins (deterministic)
+            if (envelope["signature"].toString() <= stored["signature"].toString()) return false;
+        }
+    }
+
+    QJsonObject toStore = post;
+    toStore["author_pubkey"] = pubkey;
+    toStore["author_name"]   = authorObj["name"].toString();
+    toStore["signature"]     = envelope["signature"].toString();
+    toStore["verified"]      = true;
+    toStore["received_at"]   = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+
     m_kv->invokeRemoteMethod("kv_module", "set", QString(NS), key,
-        QString::fromUtf8(QJsonDocument(stored).toJson(QJsonDocument::Compact)));
+        QString::fromUtf8(QJsonDocument(toStore).toJson(QJsonDocument::Compact)));
 
     updateLastSeen(pubkey);
     emit postIngested(pubkey, postId);
     return true;
 }
 
-bool FeedStore::ingestDelete(const QString& authorPubkey, const QString& postId)
+bool FeedStore::ingestDelete(const QJsonObject& envelope)
 {
-    if (!m_kv || authorPubkey.isEmpty() || postId.isEmpty()) return false;
-    const QString key = QStringLiteral("feed:") + authorPubkey + ":" + postId;
+    if (!m_kv) return false;
+
+    const QString pubkey = envelope["author"].toObject()["pubkey"].toString();
+    const QString postId = envelope["delete"].toObject()["post_id"].toString();
+    if (pubkey.isEmpty() || postId.isEmpty()) return false;
+
+    // Verify signature before deleting — prevents spoofed tombstones
+    if (!verifyEnvelopeSignature(envelope)) return false;
+
+    const QString key = QStringLiteral("feed:") + pubkey + ":" + postId;
     m_kv->invokeRemoteMethod("kv_module", "remove", QString(NS), key);
-    emit postDeleted(authorPubkey, postId);
+    emit postDeleted(pubkey, postId);
     return true;
 }
 
-bool FeedStore::ingestProfile(const QString& pubkey, const QJsonObject& profile)
+bool FeedStore::ingestProfile(const QJsonObject& envelope)
 {
-    if (!m_kv || pubkey.isEmpty()) return false;
+    if (!m_kv) return false;
+
+    const QString pubkey = envelope["author"].toObject()["pubkey"].toString();
+    if (pubkey.isEmpty()) return false;
+
+    // Verify signature
+    if (!verifyEnvelopeSignature(envelope)) return false;
+
+    const QJsonObject profile = envelope["profile"].toObject();
     const QString key = QStringLiteral("profiles:") + pubkey;
     m_kv->invokeRemoteMethod("kv_module", "set", QString(NS), key,
         QString::fromUtf8(QJsonDocument(profile).toJson(QJsonDocument::Compact)));

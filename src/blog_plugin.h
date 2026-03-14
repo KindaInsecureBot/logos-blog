@@ -4,6 +4,7 @@
 #include "feed_store.h"
 #include "waku_sync.h"
 #include "rss_server.h"
+#include "crypto.h"
 #include <QtPlugin>
 
 class BlogPlugin : public QObject, public PluginInterface {
@@ -20,6 +21,7 @@ public:
     // Identity
     Q_INVOKABLE QString getIdentity();
     Q_INVOKABLE bool    setIdentity(const QString& displayName, const QString& bio);
+    Q_INVOKABLE QString generateKeypair();   // Generate and persist a new Ed25519 keypair
 
     // Post management
     Q_INVOKABLE QString createPost(const QString& title, const QString& body,
@@ -53,6 +55,7 @@ signals:
     void profileUpdated(const QString& pubkey, const QString& profileJson);
     void subscriptionAdded(const QString& pubkey);
     void identityChanged();
+    void wakuStarted();
 
 private:
     LogosAPI*    m_api   = nullptr;
@@ -64,6 +67,16 @@ private:
     ModuleProxy* m_kv       = nullptr;
     ModuleProxy* m_delivery = nullptr;
 
+    // Cached identity fields — set during loadOrCreateIdentity
+    QString m_ownPubkey;
+    QString m_ownPrivkey;
+    QString m_displayName;
+
     void loadOrCreateIdentity();
     void startRssServer();
+    void connectDeliveryModule();
+
+    // Build a signed Waku envelope of the given type.
+    // typePayload holds the type-specific field (e.g. {"post": {...}}).
+    QString buildSignedEnvelope(const QString& type, const QJsonObject& typePayload);
 };

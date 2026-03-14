@@ -4,6 +4,7 @@
 #include <QStandardPaths>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QDateTime>
 
 BlogPlugin::BlogPlugin(QObject* parent)
     : QObject(parent)
@@ -22,7 +23,6 @@ void BlogPlugin::initLogos(LogosAPI* api)
     // ── kv_module ──────────────────────────────────────────────────────────
     m_kv = api->getClient("kv_module");
     if (m_kv) {
-        // Switch to FileBackend for persistence across restarts
         m_kv->invokeRemoteMethod("kv_module", "setDataDir",
             QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/blog-data");
 
@@ -30,17 +30,22 @@ void BlogPlugin::initLogos(LogosAPI* api)
         m_feed->setKvClient(m_kv);
     }
 
-    // ── delivery_module (optional — Phase 3+) ─────────────────────────────
+    // ── delivery_module ───────────────────────────────────────────────────
     m_delivery = api->getClient("delivery_module");
     if (m_delivery) {
         m_waku->setDeliveryClient(m_delivery);
     }
 
-    // Connect PostStore signals to plugin signals
+    // Connect PostStore signal → build signed Waku envelope → publish
     connect(m_posts, &PostStore::postPublished,
-            this, [this](const QString& /*id*/, const QString& json) {
-        emit postPublished(json);
-        if (m_waku) m_waku->publishPost(json);
+            this, [this](const QString& /*id*/, const QString& postJson) {
+        const QJsonObject post = QJsonDocument::fromJson(postJson.toUtf8()).object();
+        QJsonObject payload;
+        payload["post"] = post;
+        const QString signedEnvelope = buildSignedEnvelope("post", payload);
+        const QString toEmit = signedEnvelope.isEmpty() ? postJson : signedEnvelope;
+        emit postPublished(toEmit);
+        if (m_waku) m_waku->publishPost(toEmit);
     });
 
     // Connect FeedStore signals to plugin signals
@@ -60,36 +65,59 @@ void BlogPlugin::initLogos(LogosAPI* api)
             QString::fromUtf8(QJsonDocument(profile).toJson(QJsonDocument::Compact)));
     });
 
-    // Connect WakuSync messages to FeedStore
-    if (m_waku) {
-        connect(m_waku, &WakuSync::messageReceived,
-                this, [this](const QString& /*topic*/, const QString& payloadJson) {
-            const QJsonObject envelope = QJsonDocument::fromJson(
-                payloadJson.toUtf8()).object();
-            if (envelope.isEmpty()) return;
-            const QString type = envelope["type"].toString();
-            if (type == "post") {
-                m_feed->ingestPost(envelope);
-            } else if (type == "delete") {
-                const QString authorPubkey = envelope["author"].toObject()["pubkey"].toString();
-                m_feed->ingestDelete(authorPubkey, envelope["post_id"].toString());
-            } else if (type == "profile") {
-                const QString pubkey = envelope["author"].toObject()["pubkey"].toString();
-                m_feed->ingestProfile(pubkey, envelope);
-            }
-        });
-    }
+    // Route WakuSync::messageReceived → FeedStore ingestion
+    connect(m_waku, &WakuSync::messageReceived,
+            this, [this](const QString& /*topic*/, const QString& payloadJson) {
+        const QJsonObject envelope = QJsonDocument::fromJson(payloadJson.toUtf8()).object();
+        if (envelope.isEmpty()) return;
+        const QString type = envelope["type"].toString();
+        if (type == "post") {
+            m_feed->ingestPost(envelope);
+        } else if (type == "delete") {
+            m_feed->ingestDelete(envelope);
+        } else if (type == "profile") {
+            m_feed->ingestProfile(envelope);
+        }
+    });
 
-    // Load or create identity
+    connect(m_waku, &WakuSync::nodeStarted, this, [this]() {
+        emit wakuStarted();
+    });
+
+    // Load or create identity (sets m_ownPubkey / m_ownPrivkey)
     loadOrCreateIdentity();
+
+    // Connect delivery_module events → WakuSync (must happen after identity is loaded)
+    connectDeliveryModule();
 
     // Start RSS server
     startRssServer();
 
-    // Start Waku node
-    if (m_waku) {
-        m_waku->start();
+    // Start Waku node, then re-subscribe to all saved author subscriptions
+    m_waku->start();
+    for (const QString& pk : m_feed->subscribedPubkeys()) {
+        m_waku->subscribeToAuthor(pk);
+        m_waku->requestHistory(pk, QDateTime::currentDateTimeUtc().addDays(-30));
     }
+}
+
+void BlogPlugin::connectDeliveryModule()
+{
+    if (!m_delivery) return;
+
+    m_api->on("delivery_module", "messageReceived", [this](QVariantList args) {
+        if (args.size() < 3) return;
+        const QString topic      = args.value(1).toString();
+        const QString b64payload = args.value(2).toString();
+
+        // Subscription gate: only process from subscribed authors + own topic
+        const QStringList parts = topic.split('/');
+        const QString topicPubkey = parts.size() >= 4 ? parts.at(3) : QString();
+        if (topicPubkey.isEmpty()) return;
+        if (topicPubkey != m_ownPubkey && !m_feed->isSubscribed(topicPubkey)) return;
+
+        m_waku->onDeliveryMessage(topic, b64payload);
+    });
 }
 
 void BlogPlugin::loadOrCreateIdentity()
@@ -99,25 +127,39 @@ void BlogPlugin::loadOrCreateIdentity()
     QVariant result = m_kv->invokeRemoteMethod("kv_module", "get",
                                                QString("blog"), QString("identity"));
     if (!result.toString().isEmpty()) {
-        // Identity already exists
         const QJsonObject identity = QJsonDocument::fromJson(
             result.toString().toUtf8()).object();
-        const QString pubkey = identity["pubkey"].toString();
-        if (m_waku) m_waku->setOwnPubkey(pubkey);
-        return;
+        const QString pubkey  = identity["pubkey"].toString();
+        const QString privkey = identity["privkey"].toString();
+        if (!pubkey.isEmpty() && !privkey.isEmpty()) {
+            m_ownPubkey   = pubkey;
+            m_ownPrivkey  = privkey;
+            m_displayName = identity["display_name"].toString();
+            if (m_waku) m_waku->setOwnPubkey(pubkey);
+            return;
+        }
     }
 
-    // No identity yet — create a placeholder (real keygen in Phase 3)
+    // No valid identity — generate Ed25519 keypair
+    const Keypair kp = Crypto::generateEd25519Keypair();
+    if (kp.pubkeyHex.isEmpty()) return;  // OpenSSL failure
+
     QJsonObject identity;
-    identity["pubkey"]            = QString();
-    identity["privkey_encrypted"] = QString();
-    identity["display_name"]      = "Logos User";
-    identity["bio"]               = QString();
-    identity["created_at"]        = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    identity["pubkey"]       = kp.pubkeyHex;
+    identity["privkey"]      = kp.privkeyHex;  // TODO Phase 6: encrypt at rest
+    identity["display_name"] = "Logos User";
+    identity["bio"]          = QString();
+    identity["created_at"]   = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
 
     m_kv->invokeRemoteMethod("kv_module", "set",
         QString("blog"), QString("identity"),
         QString::fromUtf8(QJsonDocument(identity).toJson(QJsonDocument::Compact)));
+
+    m_ownPubkey   = kp.pubkeyHex;
+    m_ownPrivkey  = kp.privkeyHex;
+    m_displayName = "Logos User";
+    if (m_waku) m_waku->setOwnPubkey(m_ownPubkey);
+    emit identityChanged();
 }
 
 void BlogPlugin::startRssServer()
@@ -125,7 +167,6 @@ void BlogPlugin::startRssServer()
     m_rss->setPostStore(m_posts);
     m_rss->setFeedStore(m_feed);
 
-    // Load port/bind settings from kv
     int     port = 8484;
     QString bind = "127.0.0.1";
 
@@ -142,6 +183,33 @@ void BlogPlugin::startRssServer()
     m_rss->start(bind, port);
 }
 
+QString BlogPlugin::buildSignedEnvelope(const QString& type, const QJsonObject& typePayload)
+{
+    if (m_ownPubkey.isEmpty() || m_ownPrivkey.isEmpty()) return {};
+
+    QJsonObject author;
+    author["pubkey"] = m_ownPubkey;
+    author["name"]   = m_displayName;
+
+    QJsonObject envelope;
+    envelope["version"]   = 1;
+    envelope["type"]      = type;
+    envelope["author"]    = author;
+    envelope["timestamp"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+
+    // Merge type-specific payload fields
+    for (auto it = typePayload.begin(); it != typePayload.end(); ++it) {
+        envelope[it.key()] = it.value();
+    }
+
+    const QByteArray canonical = QJsonDocument(envelope).toJson(QJsonDocument::Compact);
+    const QString sig = Crypto::sign(m_ownPrivkey, canonical);
+    if (sig.isEmpty()) return {};
+
+    envelope["signature"] = sig;
+    return QString::fromUtf8(QJsonDocument(envelope).toJson(QJsonDocument::Compact));
+}
+
 // ── Identity ──────────────────────────────────────────────────────────────────
 
 QString BlogPlugin::getIdentity()
@@ -149,7 +217,12 @@ QString BlogPlugin::getIdentity()
     if (!m_kv) return "{}";
     QVariant result = m_kv->invokeRemoteMethod("kv_module", "get",
                           QString("blog"), QString("identity"));
-    return result.toString().isEmpty() ? "{}" : result.toString();
+    if (result.toString().isEmpty()) return "{}";
+
+    // Return identity without the private key
+    QJsonObject identity = QJsonDocument::fromJson(result.toString().toUtf8()).object();
+    identity.remove("privkey");
+    return QString::fromUtf8(QJsonDocument(identity).toJson(QJsonDocument::Compact));
 }
 
 bool BlogPlugin::setIdentity(const QString& displayName, const QString& bio)
@@ -169,8 +242,54 @@ bool BlogPlugin::setIdentity(const QString& displayName, const QString& bio)
         QString("blog"), QString("identity"),
         QString::fromUtf8(QJsonDocument(identity).toJson(QJsonDocument::Compact)));
 
+    m_displayName = displayName;
     emit identityChanged();
+
+    // Publish updated profile over Waku
+    if (m_waku && !m_ownPubkey.isEmpty()) {
+        QJsonObject profile;
+        profile["name"]       = displayName;
+        profile["bio"]        = bio;
+        profile["avatar_url"] = QString();
+        QJsonObject payload;
+        payload["profile"] = profile;
+        const QString envelope = buildSignedEnvelope("profile", payload);
+        if (!envelope.isEmpty()) m_waku->publishPost(envelope);  // reuse publishPost for raw envelope
+    }
+
     return true;
+}
+
+QString BlogPlugin::generateKeypair()
+{
+    const Keypair kp = Crypto::generateEd25519Keypair();
+    if (kp.pubkeyHex.isEmpty()) return "{}";
+
+    if (m_kv) {
+        QVariant result = m_kv->invokeRemoteMethod("kv_module", "get",
+                              QString("blog"), QString("identity"));
+        QJsonObject identity = result.toString().isEmpty()
+            ? QJsonObject()
+            : QJsonDocument::fromJson(result.toString().toUtf8()).object();
+
+        identity["pubkey"]  = kp.pubkeyHex;
+        identity["privkey"] = kp.privkeyHex;
+        if (!identity.contains("created_at"))
+            identity["created_at"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+
+        m_kv->invokeRemoteMethod("kv_module", "set",
+            QString("blog"), QString("identity"),
+            QString::fromUtf8(QJsonDocument(identity).toJson(QJsonDocument::Compact)));
+    }
+
+    m_ownPubkey  = kp.pubkeyHex;
+    m_ownPrivkey = kp.privkeyHex;
+    if (m_waku) m_waku->setOwnPubkey(m_ownPubkey);
+    emit identityChanged();
+
+    QJsonObject out;
+    out["pubkey"] = kp.pubkeyHex;
+    return QString::fromUtf8(QJsonDocument(out).toJson(QJsonDocument::Compact));
 }
 
 // ── Post management ───────────────────────────────────────────────────────────
@@ -198,7 +317,19 @@ bool BlogPlugin::deletePost(const QString& id)
 {
     const QString tombstone = m_posts->remove(id);
     if (tombstone.isEmpty()) return false;
-    if (m_waku) m_waku->publishDelete(id);
+
+    if (m_waku && !m_ownPubkey.isEmpty() && m_delivery) {
+        QJsonObject del;
+        del["post_id"] = id;
+        QJsonObject payload;
+        payload["delete"] = del;
+        const QString envelope = buildSignedEnvelope("delete", payload);
+        if (!envelope.isEmpty()) {
+            const QString topic = QStringLiteral("/logos-blog/1/") + m_ownPubkey + "/json";
+            const QString b64 = QString::fromLatin1(envelope.toUtf8().toBase64());
+            m_delivery->invokeRemoteMethod("delivery_module", "send", topic, b64);
+        }
+    }
     return true;
 }
 

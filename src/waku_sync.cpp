@@ -88,6 +88,12 @@ void WakuSync::requestHistory(const QString& pubkeyHex, const QDateTime& since)
     m_delivery->invokeRemoteMethod("delivery_module", "queryHistory", topic, sinceIso);
 }
 
+void WakuSync::onDeliveryMessage(const QString& topic, const QString& base64payload)
+{
+    const QByteArray raw = QByteArray::fromBase64(base64payload.toLatin1());
+    emit messageReceived(topic, QString::fromUtf8(raw));
+}
+
 QString WakuSync::topicForPubkey(const QString& pubkeyHex)
 {
     return QStringLiteral("/logos-blog/1/") + pubkeyHex + "/json";
