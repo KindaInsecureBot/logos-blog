@@ -1,5 +1,5 @@
 #include "blog_plugin.h"
-#include "module_proxy.h"
+#include "logos_api_client.h"
 
 #include <QStandardPaths>
 #include <QJsonDocument>
@@ -109,10 +109,14 @@ void BlogPlugin::connectDeliveryModule()
 {
     if (!m_delivery) return;
 
-    m_api->on("delivery_module", "messageReceived", [this](QVariantList args) {
-        if (args.size() < 3) return;
-        const QString topic      = args.value(1).toString();
-        const QString b64payload = args.value(2).toString();
+    QObject* deliveryObj = m_delivery->requestObject("delivery_module");
+    if (!deliveryObj) return;
+
+    m_delivery->onEvent(deliveryObj, this, "messageReceived",
+        [this](const QString& /*eventName*/, const QVariantList& args) {
+        if (args.size() < 2) return;
+        const QString topic      = args.value(0).toString();
+        const QString b64payload = args.value(1).toString();
 
         // Subscription gate: only process from subscribed authors + own topic
         const QStringList parts = topic.split('/');

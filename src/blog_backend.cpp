@@ -1,5 +1,6 @@
 #include "blog_backend.h"
-#include "module_proxy.h"
+#include "logos_api.h"
+#include "logos_api_client.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -25,25 +26,34 @@ void BlogBackend::initLogos(LogosAPI* api)
 
 void BlogBackend::connectSignals()
 {
-    m_api->on("blog_module", "postPublished", [this](QVariantList args) {
-        emit postPublished(args.value(0).toString());
-    });
-    m_api->on("blog_module", "postReceived", [this](QVariantList args) {
-        emit postReceived(args.value(0).toString());
-    });
-    m_api->on("blog_module", "postDeleted", [this](QVariantList args) {
-        emit postDeleted(args.value(0).toString(), args.value(1).toString());
-    });
-    m_api->on("blog_module", "profileUpdated", [this](QVariantList args) {
-        emit profileUpdated(args.value(0).toString(), args.value(1).toString());
-    });
-    m_api->on("blog_module", "identityChanged", [this](QVariantList) {
-        refreshIdentity();
-    });
-    m_api->on("blog_module", "wakuStarted", [this](QVariantList) {
-        m_wakuConnected = true;
-        emit wakuStateChanged();
-    });
+    QObject* blogObj = m_blogModule->requestObject("blog_module");
+    if (!blogObj) return;
+
+    m_blogModule->onEvent(blogObj, this, "postPublished",
+        [this](const QString&, const QVariantList& args) {
+            emit postPublished(args.value(0).toString());
+        });
+    m_blogModule->onEvent(blogObj, this, "postReceived",
+        [this](const QString&, const QVariantList& args) {
+            emit postReceived(args.value(0).toString());
+        });
+    m_blogModule->onEvent(blogObj, this, "postDeleted",
+        [this](const QString&, const QVariantList& args) {
+            emit postDeleted(args.value(0).toString(), args.value(1).toString());
+        });
+    m_blogModule->onEvent(blogObj, this, "profileUpdated",
+        [this](const QString&, const QVariantList& args) {
+            emit profileUpdated(args.value(0).toString(), args.value(1).toString());
+        });
+    m_blogModule->onEvent(blogObj, this, "identityChanged",
+        [this](const QString&, const QVariantList&) {
+            refreshIdentity();
+        });
+    m_blogModule->onEvent(blogObj, this, "wakuStarted",
+        [this](const QString&, const QVariantList&) {
+            m_wakuConnected = true;
+            emit wakuStateChanged();
+        });
 
     // Waku is considered connected if delivery_module is present
     if (m_api->getClient("delivery_module")) {

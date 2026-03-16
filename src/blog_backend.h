@@ -3,7 +3,7 @@
 #include <QStringList>
 
 class LogosAPI;
-class ModuleProxy;
+class LogosAPIClient;
 
 class BlogBackend : public QObject {
     Q_OBJECT
@@ -77,7 +77,7 @@ signals:
     void errorOccurred(const QString& message);
 
 private:
-    ModuleProxy* m_blogModule    = nullptr;
+    LogosAPIClient* m_blogModule    = nullptr;
     LogosAPI*    m_api           = nullptr;
 
     QString m_ownPubkey;

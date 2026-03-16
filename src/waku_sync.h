@@ -2,7 +2,7 @@
 #include <QObject>
 #include <QSet>
 
-class ModuleProxy;
+class LogosAPIClient;
 
 // Phase 3+ implementation. Stub for Phase 1/2.
 class WakuSync : public QObject {
@@ -10,7 +10,7 @@ class WakuSync : public QObject {
 public:
     explicit WakuSync(QObject* parent = nullptr);
 
-    void setDeliveryClient(ModuleProxy* delivery);
+    void setDeliveryClient(LogosAPIClient* delivery);
     void setOwnPubkey(const QString& pubkeyHex);
 
     // Called once in BlogPlugin::initLogos after node is started
@@ -44,7 +44,7 @@ signals:
     void deliveryError(const QString& error);
 
 private:
-    ModuleProxy*  m_delivery  = nullptr;
+    LogosAPIClient*  m_delivery  = nullptr;
     QString       m_ownPubkey;
     QSet<QString> m_subscribedTopics;
 
