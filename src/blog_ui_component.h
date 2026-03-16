@@ -4,7 +4,7 @@
 
 class BlogUIComponent : public QObject, public IComponent {
     Q_OBJECT
-    Q_PLUGIN_METADATA(IID IComponent_iid FILE "ui_metadata.json")
+    Q_PLUGIN_METADATA(IID "com.example.IComponent" FILE "../ui_metadata.json")
     Q_INTERFACES(IComponent)
 public:
     explicit BlogUIComponent(QObject* parent = nullptr);

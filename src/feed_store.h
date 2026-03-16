@@ -5,7 +5,7 @@
 #include <QJsonArray>
 #include <QMap>
 
-class ModuleProxy;
+class LogosAPIClient;
 
 // Phase 3+ implementation. Stub for Phase 1/2.
 class FeedStore : public QObject {
@@ -13,7 +13,7 @@ class FeedStore : public QObject {
 public:
     explicit FeedStore(QObject* parent = nullptr);
 
-    void setKvClient(ModuleProxy* kv);
+    void setKvClient(LogosAPIClient* kv);
 
     // Subscriptions
     bool       subscribe(const QString& pubkey, const QString& displayName);
@@ -43,7 +43,7 @@ signals:
     void profileUpdated(const QString& pubkey, const QString& displayName);
 
 private:
-    ModuleProxy* m_kv = nullptr;
+    LogosAPIClient* m_kv = nullptr;
 
     // Rate limiting: per-author sliding window
     struct RateWindow { int count = 0; qint64 windowStartSecs = 0; };

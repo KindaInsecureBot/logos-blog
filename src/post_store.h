@@ -3,14 +3,14 @@
 #include <QJsonObject>
 #include <QJsonArray>
 
-class ModuleProxy;
+class LogosAPIClient;
 
 class PostStore : public QObject {
     Q_OBJECT
 public:
     explicit PostStore(QObject* parent = nullptr);
 
-    void setKvClient(ModuleProxy* kv);
+    void setKvClient(LogosAPIClient* kv);
 
     // Returns new post ID (uuid v4), saves as draft
     QString createDraft(const QString& title, const QString& body,
@@ -38,7 +38,7 @@ signals:
     void postRemoved(const QString& id);
 
 private:
-    ModuleProxy* m_kv = nullptr;
+    LogosAPIClient* m_kv = nullptr;
 
     static constexpr const char* NS = "blog";
 

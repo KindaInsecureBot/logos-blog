@@ -1,5 +1,5 @@
 #include "post_store.h"
-#include "module_proxy.h"
+#include "logos_api_client.h"
 
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -11,7 +11,7 @@ PostStore::PostStore(QObject* parent)
     : QObject(parent)
 {}
 
-void PostStore::setKvClient(ModuleProxy* kv)
+void PostStore::setKvClient(LogosAPIClient* kv)
 {
     m_kv = kv;
 }

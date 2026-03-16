@@ -1,5 +1,5 @@
 #include "feed_store.h"
-#include "module_proxy.h"
+#include "logos_api_client.h"
 #include "crypto.h"
 
 #include <QJsonDocument>
@@ -11,7 +11,7 @@ FeedStore::FeedStore(QObject* parent)
     : QObject(parent)
 {}
 
-void FeedStore::setKvClient(ModuleProxy* kv)
+void FeedStore::setKvClient(LogosAPIClient* kv)
 {
     m_kv = kv;
 }

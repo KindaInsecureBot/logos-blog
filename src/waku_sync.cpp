@@ -1,5 +1,5 @@
 #include "waku_sync.h"
-#include "module_proxy.h"
+#include "logos_api_client.h"
 
 #include <QDateTime>
 
@@ -7,7 +7,7 @@ WakuSync::WakuSync(QObject* parent)
     : QObject(parent)
 {}
 
-void WakuSync::setDeliveryClient(ModuleProxy* delivery)
+void WakuSync::setDeliveryClient(LogosAPIClient* delivery)
 {
     m_delivery = delivery;
 }
