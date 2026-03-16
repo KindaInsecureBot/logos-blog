@@ -99,7 +99,9 @@ if(BUILD_UI_PLUGIN)
     )
 
     target_include_directories(blog_ui PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
         src
+        ${CMAKE_CURRENT_SOURCE_DIR}/interfaces
         ${LOGOS_INCLUDE_DIRS}
     )
 
@@ -111,6 +113,7 @@ if(BUILD_UI_PLUGIN)
 
     # logos_sdk BEFORE Qt6::RemoteObjects
     target_link_libraries(blog_ui PRIVATE
+        component-interfaces
         Qt6::Core
         Qt6::Qml
         Qt6::Quick

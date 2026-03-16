@@ -45,7 +45,7 @@
             version = "0.1.0";
             src     = ./.;
             nativeBuildInputs = with pkgs; [ cmake ninja ];
-            buildInputs = with pkgs.qt6; [ qtbase qtdeclarative qtremoteobjects ];
+            buildInputs = with pkgs.qt6; [ qtbase qtdeclarative qtremoteobjects ] ++ [ pkgs.openssl ];
             cmakeFlags  = commonCmakeFlags ++ [ "-DBUILD_MODULE=ON" ];
             buildPhase  = "cmake --build . --target blog_module_plugin -j$NIX_BUILD_CORES";
             installPhase = ''
@@ -62,7 +62,7 @@
             src     = ./.;
             nativeBuildInputs = with pkgs; [ cmake ninja pkgs.qt6.wrapQtAppsHook ];
             buildInputs = with pkgs.qt6; [
-              qtbase qtdeclarative qtremoteobjects qtquickcontrols2
+              qtbase qtdeclarative qtremoteobjects ] ++ [ pkgs.openssl
             ];
             cmakeFlags  = commonCmakeFlags ++ [ "-DBUILD_UI_PLUGIN=ON" ];
             buildPhase  = "cmake --build . --target blog_ui -j$NIX_BUILD_CORES";
