@@ -56,6 +56,7 @@ if(BUILD_MODULE)
     )
 
     target_include_directories(blog_module_plugin PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
         src
         ${LOGOS_INCLUDE_DIRS}
     )

@@ -109,19 +109,23 @@ void BlogPlugin::connectDeliveryModule()
 {
     if (!m_delivery) return;
 
-    m_api->on("delivery_module", "messageReceived", [this](QVariantList args) {
-        if (args.size() < 3) return;
-        const QString topic      = args.value(1).toString();
-        const QString b64payload = args.value(2).toString();
-
-        // Subscription gate: only process from subscribed authors + own topic
-        const QStringList parts = topic.split('/');
-        const QString topicPubkey = parts.size() >= 4 ? parts.at(3) : QString();
-        if (topicPubkey.isEmpty()) return;
-        if (topicPubkey != m_ownPubkey && !m_feed->isSubscribed(topicPubkey)) return;
-
-        m_waku->onDeliveryMessage(topic, b64payload);
-    });
+    QObject *replica = m_delivery->requestObject("delivery_module");
+    if (replica) {
+        m_delivery->onEvent(
+            replica, this, QStringLiteral("messageReceived"),
+            [this](const QString & /*eventName*/, const QVariantList &args) {
+                if (args.size() < 3) return;
+                const QString topic      = args.value(1).toString();
+                const QString b64payload = args.value(2).toString();
+                const QStringList parts = topic.split('/');
+                const QString topicPubkey = parts.size() >= 4 ? parts.at(3) : QString();
+                if (topicPubkey.isEmpty()) return;
+                if (topicPubkey != m_ownPubkey && !m_feed->isSubscribed(topicPubkey)) return;
+                m_waku->onDeliveryMessage(topic, b64payload);
+            });
+    } else {
+        qWarning() << "BlogPlugin: failed to get delivery_module replica for events";
+    }
 }
 
 void BlogPlugin::loadOrCreateIdentity()

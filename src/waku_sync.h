@@ -2,7 +2,7 @@
 #include <QObject>
 #include <QSet>
 
-class ModuleProxy;
+#include "module_proxy.h"
 
 // Phase 3+ implementation. Stub for Phase 1/2.
 class WakuSync : public QObject {

@@ -1,5 +1,5 @@
 #pragma once
-#include "plugin_interface.h"
+#include "core/interface.h"
 #include "post_store.h"
 #include "feed_store.h"
 #include "waku_sync.h"
@@ -15,8 +15,9 @@ class BlogPlugin : public QObject, public PluginInterface {
 public:
     explicit BlogPlugin(QObject* parent = nullptr);
 
+    Q_INVOKABLE QString name() const override { return QStringLiteral("blog_module"); }
     Q_INVOKABLE QString version() const override { return "0.1.0"; }
-    Q_INVOKABLE void    initLogos(LogosAPI* api) override;
+    Q_INVOKABLE void    initLogos(LogosAPI* api);
 
     // Identity
     Q_INVOKABLE QString getIdentity();
