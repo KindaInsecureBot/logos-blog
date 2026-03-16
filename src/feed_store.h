@@ -5,7 +5,7 @@
 #include <QJsonArray>
 #include <QMap>
 
-class ModuleProxy;
+#include "module_proxy.h"
 
 // Phase 3+ implementation. Stub for Phase 1/2.
 class FeedStore : public QObject {

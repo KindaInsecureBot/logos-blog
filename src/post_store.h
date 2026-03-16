@@ -3,7 +3,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 
-class ModuleProxy;
+#include "module_proxy.h"
 
 class PostStore : public QObject {
     Q_OBJECT

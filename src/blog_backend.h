@@ -3,7 +3,7 @@
 #include <QStringList>
 
 class LogosAPI;
-class ModuleProxy;
+#include "module_proxy.h"
 
 class BlogBackend : public QObject {
     Q_OBJECT
