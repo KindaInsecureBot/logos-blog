@@ -21,7 +21,5 @@ ScrollView {
         selectByMouse: true
         textFormat: TextEdit.PlainText
 
-        // Minimal styling cues: background is transparent
-        background: null
     }
 }

@@ -13,7 +13,7 @@ Dialog {
     onAccepted: {
         const pk = pubkeyField.text.trim()
         if (pk !== "") {
-            emit root.subscribed(pk, nameField.text.trim())
+            root.subscribed(pk, nameField.text.trim())
             pubkeyField.text = ""
             nameField.text   = ""
         }

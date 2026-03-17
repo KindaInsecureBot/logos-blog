@@ -47,7 +47,7 @@ Item {
         if (root.draftId === "") {
             root.draftId = backend.createPost(
                 titleField.text, bodyArea.text, summaryField.text, tagList)
-            emit root.saved(root.draftId)
+            root.saved(root.draftId)
         } else {
             backend.updatePost(root.draftId, titleField.text,
                 bodyArea.text, summaryField.text, tagList)
@@ -59,7 +59,7 @@ Item {
         if (root.draftId === "") return
         const ok = backend.publishPost(root.draftId)
         if (ok) {
-            emit root.postPublished(root.draftId)
+            root.postPublished(root.draftId)
         }
     }
 

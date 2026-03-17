@@ -26,8 +26,11 @@ logos_host
         ├── RssServer    ← local HTTP server on 127.0.0.1:8484
         └── Crypto       ← Ed25519 sign/verify (OpenSSL EVP)
 
-lez-registry/            ← on-chain author→CID index (SPEL Rust program)
-  └── src/lib.rs         ← register_post / remove_post / get_posts
+lez-registry/                ← on-chain author→CID index (SPEL Rust workspace)
+  ├── blog_registry_core/  ← shared types + in-memory mock
+  └── methods/guest/       ← SPEL entry point (compiled for LEZ)
+                               register_post / remove_post / get_posts
+                               cap: 10 000 CIDs per author (oldest evicted)
 ```
 
 ### Module dependencies
