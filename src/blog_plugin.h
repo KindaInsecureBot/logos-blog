@@ -2,7 +2,7 @@
 #include "core/interface.h"
 #include "post_store.h"
 #include "feed_store.h"
-#include "waku_sync.h"
+#include "chat_sync.h"
 #include "storage_sync.h"
 #include "rss_server.h"
 #include "crypto.h"
@@ -73,13 +73,13 @@ private:
     LogosAPI*     m_api     = nullptr;
     PostStore*    m_posts   = nullptr;
     FeedStore*    m_feed    = nullptr;
-    WakuSync*     m_waku    = nullptr;
+    ChatSync*     m_chat    = nullptr;
     StorageSync*  m_storage = nullptr;
     RssServer*    m_rss     = nullptr;
 
-    LogosAPIClient* m_kv              = nullptr;
-    LogosAPIClient* m_delivery        = nullptr;
-    LogosAPIClient* m_storage_client  = nullptr;
+    LogosAPIClient* m_kv             = nullptr;
+    LogosAPIClient* m_chat_client    = nullptr;
+    LogosAPIClient* m_storage_client = nullptr;
 
     // Cached identity fields — set during loadOrCreateIdentity
     QString m_ownPubkey;
@@ -88,7 +88,7 @@ private:
 
     void loadOrCreateIdentity();
     void startRssServer();
-    void connectDeliveryModule();
+    void connectChatModule();
 
     // Build a signed Waku envelope of the given type.
     // typePayload holds the type-specific field (e.g. {"post": {...}}).

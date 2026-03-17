@@ -5,7 +5,7 @@
   "category": "productivity",
   "author": "logos-co",
   "description": "Decentralized blogging backend (headless)",
-  "dependencies": ["kv_module", "storage_module"],
+  "dependencies": ["kv_module", "storage_module", "chatsdk_module"],
   "main": "blog_module_plugin",
   "manifestVersion": "0.1.0"
 }
