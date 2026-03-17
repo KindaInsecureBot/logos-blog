@@ -1,0 +1,21 @@
+[package]
+name = "blog_registry_core"
+version = "0.1.0"
+edition = "2021"
+description = "Shared types and mock implementation for the Logos Blog LEZ registry"
+license = "MIT"
+
+# NOTE: The SPEL framework (https://github.com/logos-co/spel) is experimental.
+# The crate name and version below are best-effort; update when SPEL publishes
+# official crate releases to crates.io or a known registry.
+[dependencies]
+spel = { git = "https://github.com/logos-co/spel", optional = true }
+
+[features]
+default = []
+# Enable on-chain SPEL proc-macros and Borsh serialisation.
+# TODO: Remove 'mock' feature gate once SPEL crates are published and stable.
+on-chain = ["spel"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]

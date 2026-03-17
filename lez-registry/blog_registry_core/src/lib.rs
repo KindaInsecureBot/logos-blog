@@ -1,18 +1,14 @@
-//! # LEZ Registry — Logos Blog Author→CID On-Chain Index
+//! # blog_registry_core — Shared types for the Logos Blog LEZ registry
 //!
-//! A SPEL program that stores a mapping of `author_pubkey → Vec<CID>` on the
-//! Logos Execution Zone (LEZ) ledger. Blog posts are published to the Logos
-//! Storage module; their CIDs are registered here so any node can enumerate
-//! an author's posts without relying on a centralised index.
+//! This crate contains the data types, instruction parameters, and a
+//! fully-functional in-memory mock used for local testing. The on-chain SPEL
+//! program entry point lives in `methods/guest/src/bin/blog_registry.rs`.
 //!
-//! ## Instructions
+//! ## CID cap
 //!
-//! | Instruction | Description |
-//! |-------------|-------------|
-//! | `initialize` | Create the registry account for the caller |
-//! | `register_post` | Append a CID to an author's post list |
-//! | `remove_post` | Remove a CID from an author's post list |
-//! | `get_posts` | Query all CIDs for a given author pubkey |
+//! Each author registry is capped at [`Registry::MAX_CIDS`] entries (10 000).
+//! When the cap is reached the **oldest** CID (index 0) is evicted before the
+//! new one is appended, keeping total storage bounded on-chain.
 //!
 //! ## SPEL compatibility note
 //!
@@ -35,6 +31,12 @@ use spel::{
     pubkey::Pubkey,
 };
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+/// Maximum number of CIDs stored per author.
+/// When this limit is reached the oldest entry is evicted to make room.
+pub const MAX_CIDS_PER_AUTHOR: usize = 10_000;
+
 // ── Data types (shared between on-chain and mock) ──────────────────────────────
 
 /// Serialisable registry account stored on-chain.
@@ -45,7 +47,7 @@ pub struct Registry {
     /// Ed25519 public key of the blog author (hex-encoded, 64 chars).
     pub author_pubkey: String,
     /// Ordered list of storage CIDs for this author's published posts.
-    /// Most recent post is appended last (chronological order).
+    /// Oldest post is at index 0 (chronological order). Capped at MAX_CIDS.
     pub cids: Vec<String>,
     /// Version field for future schema migrations.
     pub version: u8,
@@ -53,6 +55,8 @@ pub struct Registry {
 
 impl Registry {
     pub const VERSION: u8 = 1;
+    /// Hard cap on CIDs per author. Oldest entry is evicted when exceeded.
+    pub const MAX_CIDS: usize = MAX_CIDS_PER_AUTHOR;
 
     pub fn new(author_pubkey: String) -> Self {
         Self {
@@ -60,6 +64,24 @@ impl Registry {
             cids: Vec::new(),
             version: Self::VERSION,
         }
+    }
+
+    /// Append a CID, evicting the oldest if the cap is reached.
+    /// Duplicate CIDs are silently ignored (idempotent).
+    pub fn push_cid(&mut self, cid: String) {
+        if self.cids.contains(&cid) {
+            return;
+        }
+        if self.cids.len() >= Self::MAX_CIDS {
+            // Evict oldest (first) entry to stay within the cap.
+            self.cids.remove(0);
+        }
+        self.cids.push(cid);
+    }
+
+    /// Remove a CID. No-op if the CID is not present.
+    pub fn remove_cid(&mut self, cid: &str) {
+        self.cids.retain(|c| c != cid);
     }
 }
 
@@ -89,129 +111,20 @@ pub struct GetPostsParams {
     pub author_pubkey: String,
 }
 
-// ── On-chain program (SPEL) ────────────────────────────────────────────────────
+// ── On-chain account size helper ───────────────────────────────────────────────
 
-#[cfg(feature = "on-chain")]
-#[lez_program]
-pub mod lez_registry_program {
-    use super::*;
-
-    /// Create the registry account for the signing author.
-    ///
-    /// Must be called once per author before any `register_post` calls.
-    /// The account is funded by the caller (author pays rent).
-    #[instruction]
-    pub fn initialize(ctx: Context<Initialize>) -> Result<(), ProgramError> {
-        let registry = &mut ctx.accounts.registry;
-        let author_pubkey = ctx.accounts.authority.key().to_string();
-        **registry = Registry::new(author_pubkey);
-        Ok(())
-    }
-
-    /// Append a CID to the author's post list.
-    ///
-    /// Only the account authority (author) can call this.
-    /// Duplicate CIDs are silently ignored to keep the list idempotent.
-    #[instruction]
-    pub fn register_post(
-        ctx: Context<AuthorAccess>,
-        params: RegisterPostParams,
-    ) -> Result<(), ProgramError> {
-        let registry = &mut ctx.accounts.registry;
-
-        if params.cid.is_empty() {
-            return Err(ProgramError::InvalidArgument);
-        }
-
-        // Idempotent: skip if CID already present.
-        if !registry.cids.contains(&params.cid) {
-            registry.cids.push(params.cid);
-        }
-
-        Ok(())
-    }
-
-    /// Remove a CID from the author's post list.
-    ///
-    /// Used when an author deletes a post. No-op if the CID is not found.
-    #[instruction]
-    pub fn remove_post(
-        ctx: Context<AuthorAccess>,
-        params: RemovePostParams,
-    ) -> Result<(), ProgramError> {
-        let registry = &mut ctx.accounts.registry;
-        registry.cids.retain(|c| c != &params.cid);
-        Ok(())
-    }
-
-    /// Return all CIDs registered for a given author (read-only view).
-    ///
-    /// In SPEL, read-only instructions return data via the program return value
-    /// rather than emitting an account mutation.
-    ///
-    /// TODO: Verify the SPEL return-value convention once the SDK stabilises.
-    ///   Some frameworks use a separate "view" function type; update accordingly.
-    #[instruction]
-    pub fn get_posts(
-        ctx: Context<ReadOnly>,
-        params: GetPostsParams,
-    ) -> Result<Vec<String>, ProgramError> {
-        // The account passed in ctx must correspond to the requested pubkey.
-        // Client-side: derive the PDA for params.author_pubkey and pass that account.
-        let registry = &ctx.accounts.registry;
-
-        if registry.author_pubkey != params.author_pubkey {
-            return Err(ProgramError::InvalidAccountData);
-        }
-
-        Ok(registry.cids.clone())
-    }
-
-    // ── Account contexts ───────────────────────────────────────────────────────
-
-    /// Accounts needed for `initialize`.
-    #[derive(spel::Accounts)]
-    pub struct Initialize<'info> {
-        /// The registry account to create (PDA derived from authority pubkey).
-        #[account(init, payer = authority, space = Registry::serialised_size())]
-        pub registry: Account<'info, Registry>,
-        /// The author who is creating and will own the registry.
-        #[account(mut, signer)]
-        pub authority: Account<'info, Pubkey>,
-    }
-
-    /// Accounts needed for mutating instructions (`register_post`, `remove_post`).
-    #[derive(spel::Accounts)]
-    pub struct AuthorAccess<'info> {
-        /// The author's existing registry account.
-        #[account(mut, has_one = authority)]
-        pub registry: Account<'info, Registry>,
-        /// Must match the authority stored in `registry`.
-        #[account(signer)]
-        pub authority: Account<'info, Pubkey>,
-    }
-
-    /// Accounts needed for read-only queries (`get_posts`).
-    #[derive(spel::Accounts)]
-    pub struct ReadOnly<'info> {
-        /// The registry account to read from (any payer, no mutation).
-        pub registry: Account<'info, Registry>,
-    }
-}
-
-// TODO: Registry::serialised_size() must be implemented once BorshSerialize
-// is available. Estimate: 64 (pubkey) + 4 (vec len) + N * (4 + ~60) bytes per CID
-// + 1 (version) + discriminator overhead. Use a generous max CID count for the
-// initial allocation; the account can be reallocated as the post list grows.
 #[cfg(feature = "on-chain")]
 impl Registry {
     /// Estimated upper bound for on-chain account allocation.
-    /// Supports up to 1 000 CIDs of ~60 bytes each; realloc needed beyond that.
+    /// Supports up to MAX_CIDS CIDs of ~60 bytes each; realloc needed if CIDs
+    /// are consistently longer than 60 bytes (e.g. 64-char base58 CIDv1).
+    ///
+    /// TODO: Verify exact Borsh layout and adjust once BorshSerialize is stable.
     pub fn serialised_size() -> usize {
-        8           // account discriminator
-        + 4 + 64    // author_pubkey String (len prefix + 64 hex chars)
-        + 4 + (1_000 * (4 + 64)) // cids Vec (len prefix + up to 1000 entries)
-        + 1         // version u8
+        8                                       // account discriminator
+        + 4 + 64                                // author_pubkey (len prefix + 64 hex chars)
+        + 4 + (MAX_CIDS_PER_AUTHOR * (4 + 64)) // cids Vec (len prefix + N entries)
+        + 1                                     // version u8
     }
 }
 
@@ -244,13 +157,14 @@ pub mod mock {
             author_pubkey: &str,
             params: RegisterPostParams,
         ) -> Result<(), &'static str> {
+            if params.cid.is_empty() {
+                return Err("CID must not be empty");
+            }
             let reg = self
                 .store
                 .get_mut(author_pubkey)
                 .ok_or("registry not initialised")?;
-            if !reg.cids.contains(&params.cid) {
-                reg.cids.push(params.cid);
-            }
+            reg.push_cid(params.cid);
             Ok(())
         }
 
@@ -263,7 +177,7 @@ pub mod mock {
                 .store
                 .get_mut(author_pubkey)
                 .ok_or("registry not initialised")?;
-            reg.cids.retain(|c| c != &params.cid);
+            reg.remove_cid(&params.cid);
             Ok(())
         }
 
@@ -281,7 +195,7 @@ pub mod mock {
 #[cfg(test)]
 mod tests {
     use super::mock::MockRegistry;
-    use super::{GetPostsParams, RegisterPostParams, RemovePostParams};
+    use super::{GetPostsParams, RegisterPostParams, RemovePostParams, Registry};
 
     fn registry() -> MockRegistry {
         MockRegistry::new()
@@ -350,7 +264,6 @@ mod tests {
         r.initialize(AUTHOR.to_string());
         r.register_post(AUTHOR, RegisterPostParams { cid: CID_A.to_string() })
             .unwrap();
-        // Remove a CID that was never added — should not error or panic.
         r.remove_post(
             AUTHOR,
             RemovePostParams {
@@ -379,5 +292,31 @@ mod tests {
         let result =
             r.register_post(AUTHOR, RegisterPostParams { cid: CID_A.to_string() });
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn register_post_rejects_empty_cid() {
+        let mut r = registry();
+        r.initialize(AUTHOR.to_string());
+        let result = r.register_post(AUTHOR, RegisterPostParams { cid: String::new() });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cap_evicts_oldest_on_overflow() {
+        let mut reg = Registry::new(AUTHOR.to_string());
+        // Fill to MAX_CIDS.
+        for i in 0..Registry::MAX_CIDS {
+            reg.push_cid(format!("cid-{}", i));
+        }
+        assert_eq!(reg.cids.len(), Registry::MAX_CIDS);
+        // The first CID should be "cid-0".
+        assert_eq!(reg.cids[0], "cid-0");
+
+        // Push one more — should evict "cid-0".
+        reg.push_cid("cid-overflow".to_string());
+        assert_eq!(reg.cids.len(), Registry::MAX_CIDS);
+        assert_eq!(reg.cids[0], "cid-1");
+        assert_eq!(reg.cids[reg.cids.len() - 1], "cid-overflow");
     }
 }
