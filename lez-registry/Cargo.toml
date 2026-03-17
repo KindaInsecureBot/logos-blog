@@ -1,0 +1,22 @@
+[package]
+name = "lez-registry"
+version = "0.1.0"
+edition = "2021"
+description = "On-chain author→CID registry for Logos Blog (SPEL program)"
+license = "MIT"
+
+# NOTE: The SPEL framework (https://github.com/logos-co/spel) is experimental.
+# The crate name and version below are best-effort; update when SPEL publishes
+# official crate releases to crates.io or a known registry.
+[dependencies]
+spel = { git = "https://github.com/logos-co/spel", optional = true }
+
+# Feature flag so the crate compiles for local testing without the SPEL runtime.
+# TODO: Remove the 'mock' feature once SPEL crates are published and stable.
+[features]
+default = []
+on-chain = ["spel"]
+mock = []
+
+[lib]
+crate-type = ["cdylib", "rlib"]
