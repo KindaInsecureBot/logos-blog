@@ -5,12 +5,13 @@ edition = "2021"
 description = "On-chain SPEL entry point for the Logos Blog author→CID registry"
 license = "MIT"
 
-# NOTE: The SPEL framework (https://github.com/logos-co/spel) is experimental.
-# The crate name and version below are best-effort; update when SPEL publishes
-# official crate releases to crates.io or a known registry.
 [dependencies]
-blog_registry_core = { path = "../../blog_registry_core", features = ["on-chain"] }
-spel = { git = "https://github.com/logos-co/spel" }
+blog_registry_core = { path = "../../blog_registry_core" }
+lez-framework = { git = "https://github.com/logos-co/spel" }
+nssa-core = { git = "https://github.com/logos-co/spel" }
+risc0-zkvm = { version = "1.0", default-features = false, features = ["guest"] }
+borsh = "1"
+serde = { version = "1", features = ["derive"] }
 
 [[bin]]
 name = "blog_registry"

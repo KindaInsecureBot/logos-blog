@@ -1,165 +1,156 @@
 //! # blog_registry — SPEL on-chain program entry point
 //!
-//! This binary is compiled for the Logos Execution Zone (LEZ) using the SPEL
-//! toolchain. It wraps the shared logic in `blog_registry_core` and exposes it
-//! as a deployable LEZ program.
+//! Compiled for the Logos Execution Zone (LEZ) using the SPEL toolchain.
+//! Maintains a per-author `Vec<CID>` registry stored at a PDA derived from
+//! the author's account ID.
 //!
 //! ## Instructions
 //!
-//! | Instruction | Signer required | Mutates state |
-//! |-------------|-----------------|---------------|
-//! | `initialize` | author | yes — creates registry account |
-//! | `register_post` | author | yes — appends CID (evicts oldest if cap reached) |
-//! | `remove_post` | author | yes — removes CID |
-//! | `get_posts` | none | no — read-only view |
+//! | Instruction      | Accounts                  | Mutates state |
+//! |------------------|---------------------------|---------------|
+//! | `initialize`     | registry (init+pda), author (signer) | yes — creates registry account |
+//! | `register_post`  | registry (mut+pda), author (signer), cid: String | yes — appends CID |
+//! | `remove_post`    | registry (mut+pda), author (signer), cid: String | yes — removes CID |
+//! | `get_posts`      | registry (pda), author    | no — read-only |
+//!
+//! ## PDA seed
+//!
+//! `[b"registry", author_account_id]`
 //!
 //! ## CID cap
 //!
-//! Each author registry is capped at [`blog_registry_core::MAX_CIDS_PER_AUTHOR`]
-//! entries (10 000). When full, the oldest CID (index 0) is evicted before the
-//! new one is appended.
-//!
-//! ## SPEL compatibility
-//!
-//! SPEL is under active development. The proc-macro names, account context types,
-//! and PDA derivation API may change.
-//!
-//! TODO: Audit against SPEL API once a stable release is published.
-//! TODO: Verify `#[lez_program]` entry-point convention with SPEL docs.
-//! TODO: Confirm PDA seed format for per-author accounts.
+//! Each author registry is capped at 10 000 entries. When full, the oldest
+//! CID (index 0) is evicted before the new one is appended.
 
-use blog_registry_core::{
-    GetPostsParams, RegisterPostParams, RemovePostParams, Registry,
-};
-use spel::{
-    account::Account,
-    context::Context,
-    error::ProgramError,
-    instruction,
-    lez_program,
-    pubkey::Pubkey,
-};
+#![no_main]
 
-// ── Program definition ────────────────────────────────────────────────────────
+use blog_registry_core::Registry;
+use borsh::BorshDeserialize;
+use lez_framework::prelude::*;
+use nssa_core::account::AccountWithMetadata;
+use nssa_core::program::AccountPostState;
+
+risc0_zkvm::guest::entry!(main);
 
 #[lez_program]
-pub mod blog_registry_program {
-
+mod blog_registry {
+    #[allow(unused_imports)]
     use super::*;
 
     // ── initialize ────────────────────────────────────────────────────────────
 
-    /// Create the registry account for the signing author.
+    /// Create the per-author registry account.
     ///
     /// Must be called once per author before any `register_post` calls.
-    /// The account is funded by the caller (author pays rent/storage fees).
-    ///
-    /// TODO: Confirm SPEL PDA derivation — seed should be b"registry" + author pubkey bytes.
     #[instruction]
-    pub fn initialize(ctx: Context<Initialize>) -> Result<(), ProgramError> {
-        let registry = &mut ctx.accounts.registry;
-        let author_pubkey = ctx.accounts.authority.key().to_string();
-        **registry = Registry::new(author_pubkey);
-        Ok(())
+    pub fn initialize(
+        #[account(init, pda = [literal("registry"), account("author")])]
+        registry: AccountWithMetadata,
+        #[account(signer)]
+        author: AccountWithMetadata,
+    ) -> LezResult {
+        let author_pubkey = author
+            .account_id
+            .value()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
+        let state = Registry::new(author_pubkey);
+        let data = borsh::to_vec(&state)
+            .map_err(|e| LezError::SerializationError { message: e.to_string() })?;
+        let mut new_account = registry.account.clone();
+        new_account.data = data.try_into().unwrap();
+
+        Ok(LezOutput::states_only(vec![
+            AccountPostState::new_claimed(new_account),
+            AccountPostState::new(author.account.clone()),
+        ]))
     }
 
     // ── register_post ─────────────────────────────────────────────────────────
 
-    /// Append a CID to the author's post list.
+    /// Append a CID to the author's registry.
     ///
-    /// - Only the account authority (author) may call this.
-    /// - Duplicate CIDs are silently ignored (idempotent).
-    /// - When the list reaches [`MAX_CIDS_PER_AUTHOR`] entries the oldest CID
-    ///   (index 0) is evicted before the new one is appended.
+    /// Idempotent: duplicate CIDs are silently ignored. When the 10 000-entry
+    /// cap is reached the oldest CID (index 0) is evicted.
     #[instruction]
     pub fn register_post(
-        ctx: Context<AuthorAccess>,
-        params: RegisterPostParams,
-    ) -> Result<(), ProgramError> {
-        if params.cid.is_empty() {
-            return Err(ProgramError::InvalidArgument);
+        #[account(mut, pda = [literal("registry"), account("author")])]
+        registry: AccountWithMetadata,
+        #[account(signer)]
+        author: AccountWithMetadata,
+        cid: String,
+    ) -> LezResult {
+        if cid.is_empty() {
+            return Err(LezError::InvalidArgument {
+                message: "cid must not be empty".to_string(),
+            });
         }
 
-        let registry = &mut ctx.accounts.registry;
-        registry.push_cid(params.cid);
-        Ok(())
+        let mut state = Registry::try_from_slice(&registry.account.data)
+            .map_err(|e| LezError::SerializationError { message: e.to_string() })?;
+        state.push_cid(cid);
+        let data = borsh::to_vec(&state)
+            .map_err(|e| LezError::SerializationError { message: e.to_string() })?;
+        let mut updated = registry.account.clone();
+        updated.data = data.try_into().unwrap();
+
+        Ok(LezOutput::states_only(vec![
+            AccountPostState::new(updated),
+            AccountPostState::new(author.account.clone()),
+        ]))
     }
 
     // ── remove_post ───────────────────────────────────────────────────────────
 
-    /// Remove a CID from the author's post list.
+    /// Remove a CID from the author's registry.
     ///
-    /// Used when an author deletes a published post. No-op if the CID is not
-    /// found (safe to call multiple times for the same CID).
+    /// No-op if the CID is not found (safe to call multiple times).
     #[instruction]
     pub fn remove_post(
-        ctx: Context<AuthorAccess>,
-        params: RemovePostParams,
-    ) -> Result<(), ProgramError> {
-        let registry = &mut ctx.accounts.registry;
-        registry.remove_cid(&params.cid);
-        Ok(())
+        #[account(mut, pda = [literal("registry"), account("author")])]
+        registry: AccountWithMetadata,
+        #[account(signer)]
+        author: AccountWithMetadata,
+        cid: String,
+    ) -> LezResult {
+        let mut state = Registry::try_from_slice(&registry.account.data)
+            .map_err(|e| LezError::SerializationError { message: e.to_string() })?;
+        state.remove_cid(&cid);
+        let data = borsh::to_vec(&state)
+            .map_err(|e| LezError::SerializationError { message: e.to_string() })?;
+        let mut updated = registry.account.clone();
+        updated.data = data.try_into().unwrap();
+
+        Ok(LezOutput::states_only(vec![
+            AccountPostState::new(updated),
+            AccountPostState::new(author.account.clone()),
+        ]))
     }
 
     // ── get_posts ─────────────────────────────────────────────────────────────
 
-    /// Return all CIDs registered for a given author (read-only view).
+    /// Return all CIDs in the author's registry (read-only).
     ///
-    /// The client derives the PDA for `params.author_pubkey` and passes that
-    /// account in `ctx.accounts.registry`. The on-chain check below validates
-    /// that the account belongs to the requested author.
-    ///
-    /// TODO: Verify the SPEL return-value convention for read-only instructions.
-    ///   Some frameworks use a separate "view" function type; update accordingly.
+    /// TODO: SPEL does not yet have a stable read-only / view-function
+    /// convention. Currently this instruction validates the account and returns
+    /// both accounts unchanged. Once SPEL stabilises a `#[query]` variant or
+    /// `LezOutput::return_value`, update this to return `Vec<String>` directly
+    /// to the caller without touching post_states.
     #[instruction]
     pub fn get_posts(
-        ctx: Context<ReadOnly>,
-        params: GetPostsParams,
-    ) -> Result<Vec<String>, ProgramError> {
-        let registry = &ctx.accounts.registry;
+        #[account(pda = [literal("registry"), account("author")])]
+        registry: AccountWithMetadata,
+        author: AccountWithMetadata,
+    ) -> LezResult {
+        // Deserialise to validate the account is a well-formed Registry.
+        let _state = Registry::try_from_slice(&registry.account.data)
+            .map_err(|e| LezError::SerializationError { message: e.to_string() })?;
 
-        if registry.author_pubkey != params.author_pubkey {
-            return Err(ProgramError::InvalidAccountData);
-        }
-
-        Ok(registry.cids.clone())
-    }
-
-    // ── Account contexts ───────────────────────────────────────────────────────
-
-    /// Accounts needed for `initialize`.
-    ///
-    /// TODO: Confirm `space` calculation once BorshSerialize is stable.
-    #[derive(spel::Accounts)]
-    pub struct Initialize<'info> {
-        /// The registry account to create (PDA derived from authority pubkey).
-        #[account(init, payer = authority, space = Registry::serialised_size())]
-        pub registry: Account<'info, Registry>,
-        /// The author who is creating and will own the registry.
-        #[account(mut, signer)]
-        pub authority: Account<'info, Pubkey>,
-    }
-
-    /// Accounts needed for mutating instructions (`register_post`, `remove_post`).
-    ///
-    /// `has_one = authority` enforces that `registry.author_pubkey` matches the
-    /// signing authority.
-    ///
-    /// TODO: Verify `has_one` constraint syntax in SPEL (mirrors Anchor convention).
-    #[derive(spel::Accounts)]
-    pub struct AuthorAccess<'info> {
-        /// The author's existing registry account (must be mutable).
-        #[account(mut, has_one = authority)]
-        pub registry: Account<'info, Registry>,
-        /// Must match the authority stored in `registry`.
-        #[account(signer)]
-        pub authority: Account<'info, Pubkey>,
-    }
-
-    /// Accounts needed for read-only queries (`get_posts`).
-    #[derive(spel::Accounts)]
-    pub struct ReadOnly<'info> {
-        /// The registry account to read from (any caller, no mutation).
-        pub registry: Account<'info, Registry>,
+        // Return accounts unchanged (read-only — no state mutation).
+        Ok(LezOutput::states_only(vec![
+            AccountPostState::new(registry.account.clone()),
+            AccountPostState::new(author.account.clone()),
+        ]))
     }
 }
