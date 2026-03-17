@@ -1,4 +1,5 @@
 #include "blog_plugin.h"
+#include "storage_sync.h"
 #include "logos_api_client.h"
 
 #include <QStandardPaths>
@@ -15,6 +16,7 @@ BlogPlugin::BlogPlugin(QObject* parent)
     , m_posts(new PostStore(this))
     , m_feed(new FeedStore(this))
     , m_waku(new WakuSync(this))
+    , m_storage(new StorageSync(this))
     , m_rss(new RssServer(this))
 {}
 
@@ -40,12 +42,34 @@ void BlogPlugin::initLogos(LogosAPI* api)
         m_waku->setDeliveryClient(m_delivery);
     }
 
-    // Connect PostStore signal → build signed Waku envelope → publish
+    // ── storage_module ────────────────────────────────────────────────────
+    m_storage_client = api->getClient("storage_module");
+    if (m_storage_client) {
+        m_storage->setStorageClient(m_storage_client);
+    }
+
+    // Connect PostStore signal → upload to storage → build signed envelope → publish
     connect(m_posts, &PostStore::postPublished,
-            this, [this](const QString& /*id*/, const QString& postJson) {
+            this, [this](const QString& id, const QString& postJson) {
         const QJsonObject post = QJsonDocument::fromJson(postJson.toUtf8()).object();
+
+        // Upload full post JSON to storage module; store CID in kv for later retrieval.
+        QString cid;
+        if (m_storage->isAvailable()) {
+            cid = m_storage->uploadContent(postJson.toUtf8());
+            if (!cid.isEmpty() && m_kv) {
+                // Store CID→post-id mapping so we can resolve it on read.
+                m_kv->invokeRemoteMethod("kv_module", "set",
+                    QString("blog"), QStringLiteral("cid:") + id, cid);
+            }
+        }
+
         QJsonObject payload;
         payload["post"] = post;
+        if (!cid.isEmpty()) {
+            // Include CID so subscribers can fetch content from storage.
+            payload["cid"] = cid;
+        }
         const QString signedEnvelope = buildSignedEnvelope("post", payload);
         const QString toEmit = signedEnvelope.isEmpty() ? postJson : signedEnvelope;
         emit postPublished(toEmit);
@@ -69,13 +93,27 @@ void BlogPlugin::initLogos(LogosAPI* api)
             QString::fromUtf8(QJsonDocument(profile).toJson(QJsonDocument::Compact)));
     });
 
-    // Route WakuSync::messageReceived → FeedStore ingestion
+    // Route WakuSync::messageReceived → FeedStore ingestion.
+    // If envelope carries a CID, fetch full post body from storage first.
     connect(m_waku, &WakuSync::messageReceived,
             this, [this](const QString& /*topic*/, const QString& payloadJson) {
-        const QJsonObject envelope = QJsonDocument::fromJson(payloadJson.toUtf8()).object();
+        QJsonObject envelope = QJsonDocument::fromJson(payloadJson.toUtf8()).object();
         if (envelope.isEmpty()) return;
         const QString type = envelope["type"].toString();
         if (type == "post") {
+            // Resolve CID → full post body if storage is available and envelope has a CID.
+            const QString cid = envelope["cid"].toString();
+            if (!cid.isEmpty() && m_storage->isAvailable()) {
+                const QByteArray body = m_storage->downloadContent(cid);
+                if (!body.isEmpty()) {
+                    // Merge downloaded full post JSON back into the envelope's post field.
+                    const QJsonObject fullPost =
+                        QJsonDocument::fromJson(body).object();
+                    if (!fullPost.isEmpty()) {
+                        envelope["post"] = fullPost;
+                    }
+                }
+            }
             m_feed->ingestPost(envelope);
         } else if (type == "delete") {
             m_feed->ingestDelete(envelope);
@@ -325,6 +363,18 @@ bool BlogPlugin::deletePost(const QString& id)
 {
     const QString tombstone = m_posts->remove(id);
     if (tombstone.isEmpty()) return false;
+
+    // Remove content from storage if we uploaded it.
+    if (m_storage->isAvailable() && m_kv) {
+        const QVariant cidVar = m_kv->invokeRemoteMethod("kv_module", "get",
+            QString("blog"), QStringLiteral("cid:") + id);
+        const QString cid = cidVar.toString();
+        if (!cid.isEmpty()) {
+            m_storage->remove(cid);
+            m_kv->invokeRemoteMethod("kv_module", "remove",
+                QString("blog"), QStringLiteral("cid:") + id);
+        }
+    }
 
     if (m_waku && !m_ownPubkey.isEmpty() && m_delivery) {
         QJsonObject del;

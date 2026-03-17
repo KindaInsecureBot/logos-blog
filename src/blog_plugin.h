@@ -3,6 +3,7 @@
 #include "post_store.h"
 #include "feed_store.h"
 #include "waku_sync.h"
+#include "storage_sync.h"
 #include "rss_server.h"
 #include "crypto.h"
 #include <QtPlugin>
@@ -69,14 +70,16 @@ signals:
     void wakuStarted();
 
 private:
-    LogosAPI*    m_api   = nullptr;
-    PostStore*   m_posts = nullptr;
-    FeedStore*   m_feed  = nullptr;
-    WakuSync*    m_waku  = nullptr;
-    RssServer*   m_rss   = nullptr;
+    LogosAPI*     m_api     = nullptr;
+    PostStore*    m_posts   = nullptr;
+    FeedStore*    m_feed    = nullptr;
+    WakuSync*     m_waku    = nullptr;
+    StorageSync*  m_storage = nullptr;
+    RssServer*    m_rss     = nullptr;
 
-    LogosAPIClient* m_kv       = nullptr;
-    LogosAPIClient* m_delivery = nullptr;
+    LogosAPIClient* m_kv              = nullptr;
+    LogosAPIClient* m_delivery        = nullptr;
+    LogosAPIClient* m_storage_client  = nullptr;
 
     // Cached identity fields — set during loadOrCreateIdentity
     QString m_ownPubkey;
