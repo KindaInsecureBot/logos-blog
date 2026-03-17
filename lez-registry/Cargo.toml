@@ -1,11 +1,12 @@
-[workspace]
-resolver = "2"
-members = [
-    "blog_registry_core",
-    "methods/guest",
-]
+[package]
+name = "blog-registry"
+version = "0.1.0"
+edition = "2021"
+description = "On-chain Logos blog post registry — stores author_pubkey → Vec<CID> mappings"
+license = "MIT"
 
-# Shared profile for all workspace members
-[profile.release]
-opt-level = 3
-lto = true
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+lez-framework = { git = "https://github.com/logos-co/spel", package = "lez-framework" }

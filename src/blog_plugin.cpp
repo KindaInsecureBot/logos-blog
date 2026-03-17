@@ -1,7 +1,5 @@
 #include "blog_plugin.h"
-#include "chat_sync.h"
-#include "storage_sync.h"
-#include "logos_api_client.h"
+#include "module_proxy.h"
 
 #include <QStandardPaths>
 #include <QJsonDocument>
@@ -16,14 +14,12 @@ BlogPlugin::BlogPlugin(QObject* parent)
     : QObject(parent)
     , m_posts(new PostStore(this))
     , m_feed(new FeedStore(this))
-    , m_chat(new ChatSync(this))
-    , m_storage(new StorageSync(this))
+    , m_chatSync(new ChatSync(this))
     , m_rss(new RssServer(this))
 {}
 
 void BlogPlugin::initLogos(LogosAPI* api)
 {
-    // REQUIRED: set base class field first so ModuleProxy calls work
     logosAPI = api;
     m_api    = api;
 
@@ -37,46 +33,68 @@ void BlogPlugin::initLogos(LogosAPI* api)
         m_feed->setKvClient(m_kv);
     }
 
-    // ── chatsdk_module ────────────────────────────────────────────────────
-    m_chat_client = api->getClient("chatsdk_module");
-    if (m_chat_client) {
-        m_chat->setChatClient(m_chat_client);
+    // ── storage_module (org.logos.StorageModuleInterface) ──────────────────
+    m_storage = api->getClient("storage_module");
+    if (m_storage) {
+        m_posts->setStorageClient(m_storage);
     }
 
-    // ── storage_module ────────────────────────────────────────────────────
-    m_storage_client = api->getClient("storage_module");
-    if (m_storage_client) {
-        m_storage->setStorageClient(m_storage_client);
+    // ── chat_module (org.logos.ChatSDKModuleInterface) ─────────────────────
+    m_chat = api->getClient("chat_module");
+    if (m_chat) {
+        m_chatSync->setChatClient(m_chat);
     }
 
-    // Connect PostStore signal → upload to storage → build signed Chat envelope → publish
+    // ── lez_registry_module ────────────────────────────────────────────────
+    m_lezRegistry = api->getClient("lez_registry_module");
+
+    // ── PostStore → Chat + LEZ registry ───────────────────────────────────
+    // When a post is published: upload the signed envelope to Storage, send a
+    // compact CID notification via Chat, and inscribe the CID on-chain.
     connect(m_posts, &PostStore::postPublished,
-            this, [this](const QString& id, const QString& postJson) {
-        const QJsonObject post = QJsonDocument::fromJson(postJson.toUtf8()).object();
-
-        // Upload full post JSON to storage; store CID in kv for local retrieval.
-        QString cid;
-        if (m_storage->isAvailable()) {
-            cid = m_storage->uploadContent(postJson.toUtf8());
-            if (!cid.isEmpty() && m_kv) {
-                m_kv->invokeRemoteMethod("kv_module", "set",
-                    QString("blog"), QStringLiteral("cid:") + id, cid);
-            }
-        }
+            this, [this](const QString& id, const QString& storageCid) {
+        // Fetch the full post content so we can build the signed envelope
+        const QJsonObject post = m_posts->getPost(id);
+        if (post.isEmpty()) return;
 
         QJsonObject payload;
         payload["post"] = post;
-        if (!cid.isEmpty()) {
-            // Include CID so subscribers can fetch content from storage.
-            payload["cid"] = cid;
-        }
+        if (!storageCid.isEmpty()) payload["cid"] = storageCid;
         const QString signedEnvelope = buildSignedEnvelope("post", payload);
-        const QString toEmit = signedEnvelope.isEmpty() ? postJson : signedEnvelope;
+        const QString toEmit = signedEnvelope.isEmpty()
+            ? QString::fromUtf8(QJsonDocument(post).toJson(QJsonDocument::Compact))
+            : signedEnvelope;
+
         emit postPublished(toEmit);
-        if (m_chat) m_chat->sendPost(toEmit);
+
+        // Send a compact CID notification via Chat SDK so subscribers can
+        // discover the new post and fetch it from Storage
+        if (m_chatSync && !storageCid.isEmpty()) {
+            QJsonObject notif;
+            notif["version"]   = 1;
+            notif["type"]      = "post";
+            notif["cid"]       = storageCid;
+            QJsonObject author;
+            author["pubkey"]   = m_ownPubkey;
+            author["name"]     = m_displayName;
+            notif["author"]    = author;
+            notif["timestamp"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+            const QByteArray canonical =
+                QJsonDocument(notif).toJson(QJsonDocument::Compact);
+            const QString sig = Crypto::sign(m_ownPrivkey, canonical);
+            if (!sig.isEmpty()) notif["signature"] = sig;
+            m_chatSync->publishMessage(
+                QString::fromUtf8(QJsonDocument(notif).toJson(QJsonDocument::Compact)));
+        } else if (m_chatSync) {
+            // No Storage CID: send the full signed envelope directly
+            if (!signedEnvelope.isEmpty()) m_chatSync->publishMessage(signedEnvelope);
+        }
+
+        // Inscribe CID in the on-chain LEZ registry
+        if (!storageCid.isEmpty()) inscribeInRegistry(storageCid);
     });
 
-    // Connect FeedStore signals to plugin signals
+    // ── FeedStore → plugin signals ─────────────────────────────────────────
     connect(m_feed, &FeedStore::postIngested,
             this, [this](const QString& authorPubkey, const QString& postId) {
         const QJsonObject post = m_feed->getPost(authorPubkey, postId);
@@ -93,27 +111,37 @@ void BlogPlugin::initLogos(LogosAPI* api)
             QString::fromUtf8(QJsonDocument(profile).toJson(QJsonDocument::Compact)));
     });
 
-    // Route ChatSync::messageReceived → FeedStore ingestion.
-    // If envelope carries a CID, fetch full post body from storage first.
-    connect(m_chat, &ChatSync::messageReceived,
-            this, [this](const QString& /*convoId*/, const QString& payloadJson) {
-        QJsonObject envelope = QJsonDocument::fromJson(payloadJson.toUtf8()).object();
+    // ── ChatSync → FeedStore ingestion ─────────────────────────────────────
+    connect(m_chatSync, &ChatSync::messageReceived,
+            this, [this](const QString& senderPubkey, const QString& envelopeJson) {
+        // Subscription gate
+        if (senderPubkey != m_ownPubkey && !m_feed->isSubscribed(senderPubkey)) return;
+
+        const QJsonObject envelope =
+            QJsonDocument::fromJson(envelopeJson.toUtf8()).object();
         if (envelope.isEmpty()) return;
+
         const QString type = envelope["type"].toString();
+
         if (type == "post") {
-            // Resolve CID → full post body if storage is available and envelope has a CID.
             const QString cid = envelope["cid"].toString();
-            if (!cid.isEmpty() && m_storage->isAvailable()) {
-                const QByteArray body = m_storage->downloadContent(cid);
-                if (!body.isEmpty()) {
-                    const QJsonObject fullPost =
-                        QJsonDocument::fromJson(body).object();
-                    if (!fullPost.isEmpty()) {
-                        envelope["post"] = fullPost;
+            if (!cid.isEmpty() && m_storage) {
+                // Fetch the full post content from Storage and reconstruct the
+                // ingestible envelope so FeedStore can verify it normally
+                const QString content = fetchFromStorage(cid);
+                if (!content.isEmpty()) {
+                    const QJsonObject fetchedPost =
+                        QJsonDocument::fromJson(content.toUtf8()).object();
+                    if (!fetchedPost.isEmpty()) {
+                        QJsonObject fullEnvelope = envelope;
+                        fullEnvelope["post"] = fetchedPost;
+                        m_feed->ingestPost(fullEnvelope);
                     }
                 }
+            } else {
+                // Envelope carries post content directly (no-storage path)
+                m_feed->ingestPost(envelope);
             }
-            m_feed->ingestPost(envelope);
         } else if (type == "delete") {
             m_feed->ingestDelete(envelope);
         } else if (type == "profile") {
@@ -121,51 +149,54 @@ void BlogPlugin::initLogos(LogosAPI* api)
         }
     });
 
-    connect(m_chat, &ChatSync::chatStarted, this, [this]() {
-        emit wakuStarted();
+    connect(m_chatSync, &ChatSync::chatStarted, this, [this]() {
+        emit chatStarted();
     });
 
-    // Load or create identity (sets m_ownPubkey / m_ownPrivkey / m_displayName)
+    // Load or create identity (sets m_ownPubkey / m_ownPrivkey)
     loadOrCreateIdentity();
 
-    // Connect Chat SDK incoming-message events (must happen after identity is loaded)
+    // Connect chat_module event signal → ChatSync dispatcher
     connectChatModule();
 
     // Start RSS server
     startRssServer();
 
-    // Start Chat SDK, then re-subscribe to all saved author conversations
-    m_chat->start();
+    // Start Chat node and re-subscribe to all saved author channels
+    m_chatSync->start();
     for (const QString& pk : m_feed->subscribedPubkeys()) {
-        m_chat->subscribeToAuthor(pk);
-        m_chat->requestHistory(pk, QDateTime::currentDateTimeUtc().addDays(-30));
+        m_chatSync->subscribeToAuthor(pk);
     }
 }
 
 void BlogPlugin::connectChatModule()
 {
-    if (!m_chat_client) return;
+    if (!m_chat) return;
 
-    QObject* chatObj = m_chat_client->requestObject("chatsdk_module");
-    if (!chatObj) return;
-
-    m_chat_client->onEvent(chatObj, this, "messageReceived",
-        [this](const QString& /*eventName*/, const QVariantList& args) {
-        if (args.size() < 2) return;
-        const QString convoId    = args.value(0).toString();
-        const QString hexPayload = args.value(1).toString();
-
-        // Subscription gate: only process convos from subscribed authors + own convo.
-        // Chat SDK convoId format: "logos-blog:<pubkey-hex>"
-        const int colonIdx = convoId.indexOf(':');
-        const QString convoPubkey = (colonIdx >= 0)
-            ? convoId.mid(colonIdx + 1)
-            : QString();
-        if (convoPubkey.isEmpty()) return;
-        if (convoPubkey != m_ownPubkey && !m_feed->isSubscribed(convoPubkey)) return;
-
-        m_chat->onChatMessage(convoId, hexPayload);
+    // chat_module fires: messageReceived(moduleId, convoId, senderPubkey, contentHex)
+    m_api->on("chat_module", "messageReceived", [this](QVariantList args) {
+        // args: [moduleId, convoId, senderPubkey, contentHex]
+        if (args.size() < 4) return;
+        const QString convoId     = args.value(1).toString();
+        const QString senderPubkey = args.value(2).toString();
+        const QString contentHex  = args.value(3).toString();
+        m_chatSync->onChatMessage(convoId, senderPubkey, contentHex);
     });
+}
+
+QString BlogPlugin::fetchFromStorage(const QString& cid)
+{
+    if (!m_storage || cid.isEmpty()) return {};
+    const QVariant result = m_storage->invokeRemoteMethod(
+        "storage_module", "downloadChunks", cid);
+    return result.toString();
+}
+
+void BlogPlugin::inscribeInRegistry(const QString& cid)
+{
+    if (!m_lezRegistry || m_ownPubkey.isEmpty() || cid.isEmpty()) return;
+    m_lezRegistry->invokeRemoteMethod(
+        "lez_registry_module", "register_post", m_ownPubkey, cid);
 }
 
 void BlogPlugin::loadOrCreateIdentity()
@@ -183,18 +214,17 @@ void BlogPlugin::loadOrCreateIdentity()
             m_ownPubkey   = pubkey;
             m_ownPrivkey  = privkey;
             m_displayName = identity["display_name"].toString();
-            if (m_chat) m_chat->setOwnPubkey(pubkey);
+            if (m_chatSync) m_chatSync->setOwnPubkey(pubkey);
             return;
         }
     }
 
-    // No valid identity — generate Ed25519 keypair
     const Keypair kp = Crypto::generateEd25519Keypair();
-    if (kp.pubkeyHex.isEmpty()) return;  // OpenSSL failure
+    if (kp.pubkeyHex.isEmpty()) return;
 
     QJsonObject identity;
     identity["pubkey"]       = kp.pubkeyHex;
-    identity["privkey"]      = kp.privkeyHex;  // TODO Phase 6: encrypt at rest
+    identity["privkey"]      = kp.privkeyHex;
     identity["display_name"] = "Logos User";
     identity["bio"]          = QString();
     identity["created_at"]   = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
@@ -206,7 +236,7 @@ void BlogPlugin::loadOrCreateIdentity()
     m_ownPubkey   = kp.pubkeyHex;
     m_ownPrivkey  = kp.privkeyHex;
     m_displayName = "Logos User";
-    if (m_chat) m_chat->setOwnPubkey(m_ownPubkey);
+    if (m_chatSync) m_chatSync->setOwnPubkey(m_ownPubkey);
     emit identityChanged();
 }
 
@@ -231,7 +261,8 @@ void BlogPlugin::startRssServer()
     m_rss->start(bind, port);
 }
 
-QString BlogPlugin::buildSignedEnvelope(const QString& type, const QJsonObject& typePayload)
+QString BlogPlugin::buildSignedEnvelope(const QString& type,
+                                        const QJsonObject& typePayload)
 {
     if (m_ownPubkey.isEmpty() || m_ownPrivkey.isEmpty()) return {};
 
@@ -245,7 +276,6 @@ QString BlogPlugin::buildSignedEnvelope(const QString& type, const QJsonObject& 
     envelope["author"]    = author;
     envelope["timestamp"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
 
-    // Merge type-specific payload fields
     for (auto it = typePayload.begin(); it != typePayload.end(); ++it) {
         envelope[it.key()] = it.value();
     }
@@ -267,7 +297,6 @@ QString BlogPlugin::getIdentity()
                           QString("blog"), QString("identity"));
     if (result.toString().isEmpty()) return "{}";
 
-    // Return identity without the private key
     QJsonObject identity = QJsonDocument::fromJson(result.toString().toUtf8()).object();
     identity.remove("privkey");
     return QString::fromUtf8(QJsonDocument(identity).toJson(QJsonDocument::Compact));
@@ -293,9 +322,16 @@ bool BlogPlugin::setIdentity(const QString& displayName, const QString& bio)
     m_displayName = displayName;
     emit identityChanged();
 
-    // Broadcast updated profile over Chat SDK
-    if (m_chat && !m_ownPubkey.isEmpty()) {
-        m_chat->sendProfile(displayName, bio);
+    // Publish updated profile via Chat SDK
+    if (m_chatSync && !m_ownPubkey.isEmpty()) {
+        QJsonObject profile;
+        profile["name"]       = displayName;
+        profile["bio"]        = bio;
+        profile["avatar_url"] = QString();
+        QJsonObject payload;
+        payload["profile"] = profile;
+        const QString envelope = buildSignedEnvelope("profile", payload);
+        if (!envelope.isEmpty()) m_chatSync->publishMessage(envelope);
     }
 
     return true;
@@ -325,7 +361,7 @@ QString BlogPlugin::generateKeypair()
 
     m_ownPubkey  = kp.pubkeyHex;
     m_ownPrivkey = kp.privkeyHex;
-    if (m_chat) m_chat->setOwnPubkey(m_ownPubkey);
+    if (m_chatSync) m_chatSync->setOwnPubkey(m_ownPubkey);
     emit identityChanged();
 
     QJsonObject out;
@@ -356,23 +392,18 @@ bool BlogPlugin::publishPost(const QString& id)
 
 bool BlogPlugin::deletePost(const QString& id)
 {
-    const QString tombstone = m_posts->remove(id);
+    const QString storageCid = m_posts->getPostCid(id);
+    const QString tombstone  = m_posts->remove(id);
     if (tombstone.isEmpty()) return false;
 
-    // Remove content from storage if we uploaded it.
-    if (m_storage->isAvailable() && m_kv) {
-        const QVariant cidVar = m_kv->invokeRemoteMethod("kv_module", "get",
-            QString("blog"), QStringLiteral("cid:") + id);
-        const QString cid = cidVar.toString();
-        if (!cid.isEmpty()) {
-            m_storage->remove(cid);
-            m_kv->invokeRemoteMethod("kv_module", "remove",
-                QString("blog"), QStringLiteral("cid:") + id);
-        }
-    }
-
-    if (m_chat && !m_ownPubkey.isEmpty()) {
-        m_chat->sendDelete(id);
+    if (m_chatSync && !m_ownPubkey.isEmpty()) {
+        QJsonObject del;
+        del["post_id"] = id;
+        if (!storageCid.isEmpty()) del["cid"] = storageCid;
+        QJsonObject payload;
+        payload["delete"] = del;
+        const QString envelope = buildSignedEnvelope("delete", payload);
+        if (!envelope.isEmpty()) m_chatSync->publishMessage(envelope);
     }
     return true;
 }
@@ -401,18 +432,49 @@ QString BlogPlugin::listDrafts()
 bool BlogPlugin::subscribe(const QString& pubkey, const QString& displayName)
 {
     if (!m_feed->subscribe(pubkey, displayName)) return false;
-    if (m_chat) {
-        m_chat->subscribeToAuthor(pubkey);
-        m_chat->requestHistory(pubkey,
-            QDateTime::currentDateTimeUtc().addDays(-30));
+
+    // Subscribe to the author's Chat blog channel (fetches history + watches live)
+    if (m_chatSync) m_chatSync->subscribeToAuthor(pubkey);
+
+    // Also query the LEZ registry for any on-chain CIDs for this author that may
+    // predate Chat history, and fetch them from Storage
+    if (m_lezRegistry && m_storage) {
+        const QVariant regResult = m_lezRegistry->invokeRemoteMethod(
+            "lez_registry_module", "get_posts", pubkey);
+        const QString cidsJson = regResult.toString();
+        if (!cidsJson.isEmpty()) {
+            const QJsonArray cids = QJsonDocument::fromJson(cidsJson.toUtf8()).array();
+            for (const auto& cidVal : cids) {
+                const QString cid = cidVal.toString();
+                if (cid.isEmpty()) continue;
+                const QString content = fetchFromStorage(cid);
+                if (content.isEmpty()) continue;
+                const QJsonObject postObj =
+                    QJsonDocument::fromJson(content.toUtf8()).object();
+                if (postObj.isEmpty()) continue;
+                // Build a minimal envelope for FeedStore ingestion
+                QJsonObject envelope;
+                envelope["version"]   = 1;
+                envelope["type"]      = "post";
+                envelope["cid"]       = cid;
+                QJsonObject author;
+                author["pubkey"]      = pubkey;
+                author["name"]        = displayName;
+                envelope["author"]    = author;
+                envelope["timestamp"] = postObj.value("published_at").toString();
+                envelope["post"]      = postObj;
+                m_feed->ingestPost(envelope);
+            }
+        }
     }
+
     emit subscriptionAdded(pubkey);
     return true;
 }
 
 bool BlogPlugin::unsubscribe(const QString& pubkey)
 {
-    if (m_chat) m_chat->unsubscribeFromAuthor(pubkey);
+    if (m_chatSync) m_chatSync->unsubscribeFromAuthor(pubkey);
     return m_feed->unsubscribe(pubkey);
 }
 
@@ -485,12 +547,10 @@ QString BlogPlugin::searchPosts(const QString& query)
     const QString q = query.toLower();
 
     QJsonArray results;
-    // Search own posts
     for (const auto& p : m_posts->listPosts()) {
         const QJsonObject post = p.toObject();
         if (postMatchesQuery(post, q)) results.append(post);
     }
-    // Search feed posts (dedup by id+pubkey using a set)
     for (const auto& p : m_feed->getAggregatedFeed()) {
         const QJsonObject post = p.toObject();
         if (postMatchesQuery(post, q)) results.append(post);
@@ -564,4 +624,15 @@ bool BlogPlugin::importOpml(const QString& xml)
         ++imported;
     }
     return imported > 0;
+}
+
+// ── LEZ registry ──────────────────────────────────────────────────────────────
+
+QString BlogPlugin::getRegistryCids(const QString& authorPubkey)
+{
+    if (!m_lezRegistry || authorPubkey.isEmpty()) return "[]";
+    const QVariant result = m_lezRegistry->invokeRemoteMethod(
+        "lez_registry_module", "get_posts", authorPubkey);
+    const QString json = result.toString();
+    return json.isEmpty() ? QStringLiteral("[]") : json;
 }

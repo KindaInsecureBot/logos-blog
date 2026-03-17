@@ -51,7 +51,6 @@ if(BUILD_MODULE)
         src/post_store.cpp
         src/feed_store.cpp
         src/chat_sync.cpp
-        src/storage_sync.cpp
         src/rss_server.cpp
         src/crypto.cpp
     )
@@ -189,34 +188,4 @@ if(BUILD_TESTS)
     add_blog_test(test_blog_plugin
         "tests/test_blog_plugin.cpp;src/crypto.cpp"
     )
-endif()
-
-# ── Target: visual/screenshot tests (BUILD_VISUAL_TESTS=ON) ──────────────────
-# No Logos SDK required. Needs Qt6::Quick + a real or virtual display at run time.
-option(BUILD_VISUAL_TESTS "Build Qt Quick headless screenshot tests" OFF)
-
-if(BUILD_VISUAL_TESTS)
-    find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Qml QuickControls2 Test)
-    set(CMAKE_AUTOMOC ON)
-
-    add_executable(test_visual tests/test_visual.cpp)
-
-    target_include_directories(test_visual PRIVATE tests)
-
-    target_compile_definitions(test_visual PRIVATE
-        BLOG_QML_DIR="${CMAKE_CURRENT_SOURCE_DIR}/qml"
-        DEFAULT_SCREENSHOTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/screenshots"
-    )
-
-    target_link_libraries(test_visual PRIVATE
-        Qt6::Core
-        Qt6::Gui
-        Qt6::Quick
-        Qt6::Qml
-        Qt6::QuickControls2
-        Qt6::Test
-    )
-
-    # Register with ctest so `ctest` can run it (needs DISPLAY to be set)
-    add_test(NAME test_visual COMMAND test_visual)
 endif()

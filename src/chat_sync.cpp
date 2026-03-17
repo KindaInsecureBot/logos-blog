@@ -1,119 +1,112 @@
 #include "chat_sync.h"
-#include "logos_api_client.h"
+#include "module_proxy.h"
 
-#include <QDateTime>
+#include <QCryptographicHash>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 
 ChatSync::ChatSync(QObject* parent)
     : QObject(parent)
 {}
 
-void ChatSync::setChatClient(LogosAPIClient* chat)
+void ChatSync::setChatClient(ModuleProxy* chat)
 {
     m_chat = chat;
 }
 
 void ChatSync::setOwnPubkey(const QString& pubkeyHex)
 {
-    m_ownPubkey = pubkeyHex;
+    m_ownPubkey  = pubkeyHex;
+    m_ownConvoId = blogConvoIdForPubkey(pubkeyHex);
+}
+
+// static
+QString ChatSync::blogConvoIdForPubkey(const QString& pubkeyHex)
+{
+    const QByteArray input =
+        QStringLiteral("logos-blog-channel:").toUtf8() + pubkeyHex.toUtf8();
+    return QString::fromLatin1(
+        QCryptographicHash::hash(input, QCryptographicHash::Sha256).toHex());
 }
 
 void ChatSync::start()
 {
     if (!m_chat) {
-        // No Chat SDK client — report as started so the rest of the plugin
-        // can continue in degraded mode (local-only, no P2P).
-        emit chatStarted();
+        emit chatStarted(); // no chat module available; proceed in offline mode
         return;
     }
 
-    // Initialize Chat SDK with default blog configuration.
-    const QString config = R"({"logLevel":"WARN","preset":"logos.dev"})";
-    m_chat->invokeRemoteMethod("chatsdk_module", "initChat", config);
-    m_chat->invokeRemoteMethod("chatsdk_module", "startChat");
+    // Initialise the Chat SDK node with a minimal config
+    const QString config = QStringLiteral(
+        R"({"logLevel":"WARN","preset":"logos.dev"})");
+    m_chat->invokeRemoteMethod("chat_module", "initChat", config);
+    m_chat->invokeRemoteMethod("chat_module", "startChat");
 
-    // Join own blog convoId so outbound messages are reflected back for
-    // consistency (and so the send path has a joined conversation).
-    if (!m_ownPubkey.isEmpty()) {
-        subscribeToAuthor(m_ownPubkey);
+    // Watch own blog channel so self-published notifications round-trip correctly
+    if (!m_ownConvoId.isEmpty()) {
+        m_watchedConvos.insert(m_ownConvoId);
+        m_chat->invokeRemoteMethod("chat_module", "getConversation", m_ownConvoId);
     }
 
     emit chatStarted();
 }
 
-void ChatSync::sendPost(const QString& signedEnvelopeJson)
+void ChatSync::publishMessage(const QString& signedEnvelopeJson)
 {
-    if (!m_chat || m_ownPubkey.isEmpty()) return;
-    const QString convoId    = convoIdForPubkey(m_ownPubkey);
-    const QString hexPayload = QString::fromLatin1(
+    if (!m_chat || m_ownConvoId.isEmpty()) return;
+    // Encode envelope as hex for wire transport (Chat SDK uses hex content)
+    const QString contentHex = QString::fromLatin1(
         signedEnvelopeJson.toUtf8().toHex());
-    m_chat->invokeRemoteMethod("chatsdk_module", "sendMessage", convoId, hexPayload);
-}
-
-void ChatSync::sendDelete(const QString& postId)
-{
-    if (!m_chat || m_ownPubkey.isEmpty()) return;
-    const QString convoId = convoIdForPubkey(m_ownPubkey);
-    const QString envelope =
-        QStringLiteral(R"({"version":1,"type":"delete","post_id":")") + postId + "\"}";
-    const QString hexPayload = QString::fromLatin1(envelope.toUtf8().toHex());
-    m_chat->invokeRemoteMethod("chatsdk_module", "sendMessage", convoId, hexPayload);
-}
-
-void ChatSync::sendProfile(const QString& displayName, const QString& bio)
-{
-    if (!m_chat || m_ownPubkey.isEmpty()) return;
-    const QString convoId = convoIdForPubkey(m_ownPubkey);
-    const QString envelope =
-        QStringLiteral(R"({"version":1,"type":"profile","name":")") +
-        displayName + R"(","bio":")" + bio + "\"}";
-    const QString hexPayload = QString::fromLatin1(envelope.toUtf8().toHex());
-    m_chat->invokeRemoteMethod("chatsdk_module", "sendMessage", convoId, hexPayload);
+    m_chat->invokeRemoteMethod("chat_module", "sendMessage",
+                               m_ownConvoId, contentHex);
 }
 
 void ChatSync::subscribeToAuthor(const QString& pubkeyHex)
 {
-    if (!m_chat || pubkeyHex.isEmpty()) return;
-    const QString convoId = convoIdForPubkey(pubkeyHex);
-    if (m_joinedConvos.contains(convoId)) return;
-    m_joinedConvos.insert(convoId);
-    // Join the author's blog broadcast conversation.
-    // NOTE: The Chat SDK public-channel / group API is not yet finalised.
-    //   joinConversation may require a prior intro-bundle exchange for private
-    //   conversations. For public blog broadcasts we treat convoId as a
-    //   content topic similar to the old Waku approach.
-    // TODO: Replace with the Chat SDK group/public-channel join call once the
-    //   API is stable (see https://github.com/logos-co/status-go ChatSDK docs).
-    m_chat->invokeRemoteMethod("chatsdk_module", "joinConversation", convoId);
+    if (pubkeyHex.isEmpty()) return;
+    const QString convoId = blogConvoIdForPubkey(pubkeyHex);
+    if (m_watchedConvos.contains(convoId)) return;
+    m_watchedConvos.insert(convoId);
+
+    if (!m_chat) return;
+
+    // Request conversation history; the module returns a JSON array of messages:
+    // [{"sender": "<pubkey>", "content": "<hex>", "timestamp": "..."}, ...]
+    const QVariant result = m_chat->invokeRemoteMethod(
+        "chat_module", "getConversation", convoId);
+    const QString historyJson = result.toString();
+    if (historyJson.isEmpty()) return;
+
+    const QJsonArray messages = QJsonDocument::fromJson(historyJson.toUtf8()).array();
+    for (const auto& msg : messages) {
+        const QJsonObject m = msg.toObject();
+        const QString sender     = m["sender"].toString();
+        const QString contentHex = m["content"].toString();
+        if (sender.isEmpty() || contentHex.isEmpty()) continue;
+        onChatMessage(convoId, sender, contentHex);
+    }
 }
 
 void ChatSync::unsubscribeFromAuthor(const QString& pubkeyHex)
 {
-    if (!m_chat || pubkeyHex.isEmpty()) return;
-    const QString convoId = convoIdForPubkey(pubkeyHex);
-    m_joinedConvos.remove(convoId);
-    m_chat->invokeRemoteMethod("chatsdk_module", "leaveConversation", convoId);
+    if (pubkeyHex.isEmpty()) return;
+    m_watchedConvos.remove(blogConvoIdForPubkey(pubkeyHex));
 }
 
-void ChatSync::requestHistory(const QString& pubkeyHex, const QDateTime& since)
+void ChatSync::onChatMessage(const QString& convoId,
+                             const QString& senderPubkey,
+                             const QString& contentHex)
 {
-    if (!m_chat || pubkeyHex.isEmpty()) return;
-    const QString convoId  = convoIdForPubkey(pubkeyHex);
-    const QString sinceIso = since.toUTC().toString(Qt::ISODate);
-    // TODO: Replace with the actual Chat SDK history query method name once
-    //   the SDK API is finalised. "queryHistory" is a best-effort call.
-    m_chat->invokeRemoteMethod("chatsdk_module", "queryHistory", convoId, sinceIso);
-}
+    if (!m_watchedConvos.contains(convoId)) return;
+    if (senderPubkey.isEmpty() || contentHex.isEmpty()) return;
 
-void ChatSync::onChatMessage(const QString& convoId, const QString& hexPayload)
-{
-    // Decode hex → UTF-8 JSON envelope.
-    const QByteArray raw = QByteArray::fromHex(hexPayload.toLatin1());
-    emit messageReceived(convoId, QString::fromUtf8(raw));
-}
+    // Decode hex-encoded envelope JSON
+    const QByteArray raw = QByteArray::fromHex(contentHex.toLatin1());
+    if (raw.isEmpty()) return;
 
-// static
-QString ChatSync::convoIdForPubkey(const QString& pubkeyHex)
-{
-    // Stable, human-readable conversation ID for the author's blog channel.
-    return QStringLiteral("logos-blog:") + pubkeyHex;
+    const QString envelopeJson = QString::fromUtf8(raw);
+    if (envelopeJson.isEmpty()) return;
+
+    emit messageReceived(senderPubkey, envelopeJson);
 }

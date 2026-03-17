@@ -1,73 +1,55 @@
 #pragma once
 #include <QObject>
 #include <QSet>
-#include <QDateTime>
 
-class LogosAPIClient;
+class ModuleProxy;
 
-// Chat SDK integration for blog P2P messaging (org.logos.ChatSDKModuleInterface).
-// Replaces WakuSync / delivery_module: blog posts are now broadcast as Chat SDK
-// messages whose payload is a hex-encoded signed envelope containing a storage CID.
+// Chat SDK module wrapper — replaces WakuSync for P2P blog message delivery.
 //
-// Publishing flow:
-//   1. BlogPlugin uploads post to StorageSync → CID
-//   2. BlogPlugin calls buildSignedEnvelope() with cid field
-//   3. ChatSync::sendPost(signedEnvelopeJson) sends via sendMessage(convoId, hexPayload)
+// Each author broadcasts post CID notifications to their deterministic "blog
+// channel" conversation.  The conversation ID is derived as:
+//   SHA-256("logos-blog-channel:" + pubkeyHex)  → hex string
 //
-// Receiving flow:
-//   1. Chat SDK fires incoming message event (onEvent "messageReceived")
-//   2. ChatSync::onChatMessage(convoId, hexPayload) decodes and emits messageReceived
-//   3. BlogPlugin fetches body from StorageSync, feeds FeedStore
-//
-// Conversation IDs:
-//   Blog uses a stable convoId derived from the author pubkey so each author has
-//   a dedicated broadcast "channel". The format is "logos-blog:<pubkey-hex>".
-//   This mirrors the old Waku topic structure for kv-index compatibility.
+// Messages sent to a conversation are hex-encoded UTF-8 JSON envelopes.
+// The Chat SDK module ID is "org.logos.ChatSDKModuleInterface".
 class ChatSync : public QObject {
     Q_OBJECT
 public:
     explicit ChatSync(QObject* parent = nullptr);
 
-    void setChatClient(LogosAPIClient* chat);
+    void setChatClient(ModuleProxy* chat);
     void setOwnPubkey(const QString& pubkeyHex);
 
-    // Initialize Chat SDK and start chat. Subscribes own blog convoId.
+    // Initialise and start the Chat SDK node. Emits chatStarted() on success.
     void start();
 
-    // Broadcast a signed post envelope (containing CID) on the own blog convoId.
-    void sendPost(const QString& signedEnvelopeJson);
+    // Send a signed envelope JSON to own blog channel (hex-encoded on the wire).
+    void publishMessage(const QString& signedEnvelopeJson);
 
-    // Broadcast a delete tombstone on the own blog convoId.
-    void sendDelete(const QString& postId);
-
-    // Broadcast a profile update on the own blog convoId.
-    void sendProfile(const QString& displayName, const QString& bio);
-
-    // Join an author's blog conversation to receive their posts.
+    // Subscribe to an author's blog channel to receive their CID notifications.
+    // Fetches any stored history and emits messageReceived for each past entry.
     void subscribeToAuthor(const QString& pubkeyHex);
 
-    // Leave an author's blog conversation.
+    // Stop listening to an author's blog channel.
     void unsubscribeFromAuthor(const QString& pubkeyHex);
 
-    // Request history replay for an author's convoId (best-effort).
-    // TODO: Update when Chat SDK exposes a getMessages/queryHistory method.
-    void requestHistory(const QString& pubkeyHex, const QDateTime& since);
+    // Called by BlogPlugin when chat_module fires its messageReceived signal.
+    void onChatMessage(const QString& convoId,
+                       const QString& senderPubkey,
+                       const QString& contentHex);
 
-    // Called by BlogPlugin when the Chat SDK fires an incoming message event.
-    // Decodes hex payload and emits messageReceived.
-    void onChatMessage(const QString& convoId, const QString& hexPayload);
+    // Derive the blog channel conversation ID for a given pubkey.
+    static QString blogConvoIdForPubkey(const QString& pubkeyHex);
 
 signals:
-    // Emitted with the convoId and decoded JSON payload string.
-    void messageReceived(const QString& convoId, const QString& payloadJson);
+    // Decoded envelope JSON from a subscribed author (or own pubkey).
+    void messageReceived(const QString& senderPubkey, const QString& envelopeJson);
     void chatStarted();
     void chatError(const QString& error);
 
 private:
-    LogosAPIClient* m_chat = nullptr;
-    QString         m_ownPubkey;
-    QSet<QString>   m_joinedConvos;
-
-    // Stable convoId for a given author pubkey.
-    static QString convoIdForPubkey(const QString& pubkeyHex);
+    ModuleProxy*  m_chat = nullptr;
+    QString       m_ownPubkey;
+    QString       m_ownConvoId;
+    QSet<QString> m_watchedConvos; // convo IDs we are actively watching
 };
