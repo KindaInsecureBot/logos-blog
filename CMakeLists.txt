@@ -50,7 +50,7 @@ if(BUILD_MODULE)
         src/blog_plugin.cpp
         src/post_store.cpp
         src/feed_store.cpp
-        src/waku_sync.cpp
+        src/chat_sync.cpp
         src/rss_server.cpp
         src/crypto.cpp
     )
