@@ -82,7 +82,8 @@ mod blog_registry {
         cid: String,
     ) -> LezResult {
         if cid.is_empty() {
-            return Err(LezError::InvalidArgument {
+            return Err(LezError::Custom {
+                code: 6000,
                 message: "cid must not be empty".to_string(),
             });
         }
@@ -96,7 +97,7 @@ mod blog_registry {
         updated.data = data.try_into().unwrap();
 
         Ok(LezOutput::states_only(vec![
-            AccountPostState::new(updated),
+            AccountPostState::new_claimed(updated),
             AccountPostState::new(author.account.clone()),
         ]))
     }
@@ -123,7 +124,7 @@ mod blog_registry {
         updated.data = data.try_into().unwrap();
 
         Ok(LezOutput::states_only(vec![
-            AccountPostState::new(updated),
+            AccountPostState::new_claimed(updated),
             AccountPostState::new(author.account.clone()),
         ]))
     }
@@ -133,10 +134,14 @@ mod blog_registry {
     /// Return all CIDs in the author's registry (read-only).
     ///
     /// TODO: SPEL does not yet have a stable read-only / view-function
-    /// convention. Currently this instruction validates the account and returns
-    /// both accounts unchanged. Once SPEL stabilises a `#[query]` variant or
-    /// `LezOutput::return_value`, update this to return `Vec<String>` directly
-    /// to the caller without touching post_states.
+    /// convention. There is no `#[query]` attribute or `LezOutput::return_value`
+    /// API yet, so callers cannot receive a `Vec<String>` return value directly.
+    /// Until SPEL stabilises one of these mechanisms, callers must read the
+    /// registry account data out-of-band (e.g. via `getAccountData`) and
+    /// deserialise the `Registry` struct with Borsh themselves.
+    /// Tracked upstream: https://github.com/logos-co/spel (no stable issue yet).
+    /// Once resolved, update this instruction to use the view-function API and
+    /// return `Vec<String>` directly without touching post_states.
     #[instruction]
     pub fn get_posts(
         #[account(pda = [literal("registry"), account("author")])]
