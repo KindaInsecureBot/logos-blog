@@ -14,7 +14,7 @@ PostStore::PostStore(QObject* parent)
     : QObject(parent)
 {}
 
-void PostStore::setKvClient(LogosAPIClient* kv)
+void PostStore::setKvClient(ModuleProxy* kv)
 {
     m_kv = kv;
 }
@@ -51,7 +51,7 @@ QString PostStore::uploadToStorage(const QString& content)
 
     const QString fileUrl = QUrl::fromLocalFile(filePath).toString();
     const QVariant result = m_storage->invokeRemoteMethod(
-        "storage_module", "uploadUrl", fileUrl, QStringLiteral("65536"));
+        "storage_module", "uploadUrl", fileUrl, 256 * 1024);
 
     QFile::remove(filePath);
 
