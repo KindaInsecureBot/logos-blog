@@ -51,11 +51,11 @@ struct Registry {
 > https://github.com/logos-co/spel before building.
 
 ```bash
-# Build for LEZ deployment
-cargo build --release --features on-chain
+# Build the RISC Zero guest binary for LEZ deployment
+make build
 
 # Deploy to LEZ devnet (update program-id as appropriate)
-spel deploy target/release/lez_registry.so --network devnet
+lez-cli deploy target/riscv-guest/riscv32im-risc0-zkvm-elf/release/blog_registry.bin --network devnet
 ```
 
 ### Local / CI (no SPEL runtime)
@@ -79,6 +79,19 @@ if (m_lez && !cid.isEmpty()) {
         QJsonObject{{"author", m_ownPubkey}, {"cid", cid}});
 }
 ```
+
+## Known Limitations
+
+### `get_posts` does not return a value directly
+
+SPEL has no stable read-only / view-function convention yet (no `#[query]`
+attribute or `LezOutput::return_value` API). The `get_posts` instruction
+currently validates the account and echoes both accounts back unchanged.
+
+To read an author's CID list, callers must fetch the registry account data
+out-of-band (e.g. via `getAccountData(pda)`) and deserialise it as a `Registry`
+struct using Borsh. Once SPEL stabilises a view-function mechanism this
+instruction will be updated to return `Vec<String>` directly.
 
 ## SPEL Compatibility Notes
 
