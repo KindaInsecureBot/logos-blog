@@ -80,6 +80,8 @@ if(BUILD_MODULE)
         PREFIX ""
         OUTPUT_NAME "blog_module_plugin"
     )
+
+    configure_file(src/plugin_metadata.json ${CMAKE_CURRENT_BINARY_DIR}/plugin_metadata.json COPYONLY)
 endif()
 
 # ── Target: blog_ui (IComponent) ─────────────────────────────────────────────
