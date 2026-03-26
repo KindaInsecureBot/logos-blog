@@ -1,0 +1,14 @@
+{
+    "name": "blog",
+    "version": "0.1.0",
+    "type": "core",
+    "author": "KindaInsecureBot",
+    "description": "Decentralized P2P blogging plugin for Basecamp",
+    "category": "productivity",
+    "dependencies": [],
+    "icon": "",
+    "main": {
+        "linux-amd64": "blog_plugin.so"
+    },
+    "manifestVersion": "0.1.0"
+}
