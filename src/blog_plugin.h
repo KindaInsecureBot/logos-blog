@@ -11,7 +11,7 @@ class LogosAPIClient;
 
 class BlogPlugin : public QObject, public PluginInterface {
     Q_OBJECT
-    Q_PLUGIN_METADATA(IID "com.example.PluginInterface" FILE "../metadata.json")
+    Q_PLUGIN_METADATA(IID "org.logos.BlogModuleInterface" FILE "plugin_metadata.json")
     Q_INTERFACES(PluginInterface)
 
 public:
@@ -60,6 +60,7 @@ public:
     Q_INVOKABLE bool    importOpml(const QString& xml);
 
 signals:
+    void eventResponse(const QString& eventName, const QVariantList& data);
     void postPublished(const QString& postJson);
     void postReceived(const QString& postJson);
     void postDeleted(const QString& postId, const QString& authorPubkey);
